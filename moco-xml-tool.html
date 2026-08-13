@@ -1,0 +1,1706 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MOCO → ABACUS XML-Anreicherung</title>
+<style>
+  :root {
+    --color-bg: #f5f6f8;
+    --color-panel: #ffffff;
+    --color-border: #d7dbe0;
+    --color-text: #1f2430;
+    --color-muted: #5b6472;
+    --color-primary: #2c5ea8;
+    --color-primary-hover: #234a86;
+    --color-success-bg: #e6f4ea;
+    --color-success-text: #1e6b34;
+    --color-error-bg: #fbe9e9;
+    --color-error-text: #a3261f;
+    --color-warning-bg: #fff4e0;
+    --color-warning-text: #8a5a00;
+    --color-info-bg: #e8f0fb;
+    --color-info-text: #2c5ea8;
+  }
+  * { box-sizing: border-box; }
+  body {
+    font-family: "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--color-bg);
+    color: var(--color-text);
+    margin: 0;
+    padding: 2rem 1rem;
+    line-height: 1.5;
+  }
+  .container {
+    max-width: 780px;
+    margin: 0 auto;
+  }
+  h1 {
+    font-size: 1.5rem;
+    margin-bottom: 0.25rem;
+  }
+  .subtitle {
+    color: var(--color-muted);
+    margin-top: 0;
+    margin-bottom: 1.5rem;
+  }
+  .panel {
+    background: var(--color-panel);
+    border: 1px solid var(--color-border);
+    border-radius: 8px;
+    padding: 1.25rem;
+    margin-bottom: 1.25rem;
+  }
+  .dropzone {
+    border: 2px dashed var(--color-border);
+    border-radius: 8px;
+    padding: 2rem 1rem;
+    text-align: center;
+    background: var(--color-panel);
+    cursor: pointer;
+    transition: border-color 0.15s ease, background 0.15s ease;
+  }
+  .dropzone.dragover {
+    border-color: var(--color-primary);
+    background: var(--color-info-bg);
+  }
+  .dropzone p {
+    margin: 0.25rem 0;
+  }
+  .dropzone .hint {
+    color: var(--color-muted);
+    font-size: 0.9rem;
+  }
+  button {
+    font-family: inherit;
+    font-size: 0.95rem;
+    padding: 0.55rem 1.1rem;
+    border-radius: 6px;
+    border: 1px solid var(--color-primary);
+    background: var(--color-primary);
+    color: #fff;
+    cursor: pointer;
+  }
+  button:hover:not(:disabled) {
+    background: var(--color-primary-hover);
+  }
+  button:disabled {
+    background: #b9c2cc;
+    border-color: #b9c2cc;
+    cursor: not-allowed;
+  }
+  button.secondary {
+    background: #fff;
+    color: var(--color-primary);
+  }
+  button.secondary:hover:not(:disabled) {
+    background: var(--color-info-bg);
+  }
+  .filename {
+    margin-top: 0.75rem;
+    font-size: 0.9rem;
+    color: var(--color-muted);
+    min-height: 1.2em;
+  }
+  .privacy-note {
+    font-size: 0.85rem;
+    color: var(--color-muted);
+    margin: 0.75rem 0 0 0;
+  }
+  .actions {
+    display: flex;
+    gap: 0.75rem;
+    margin-top: 1.25rem;
+    flex-wrap: wrap;
+  }
+  .status {
+    margin-top: 1rem;
+    padding: 0.65rem 0.9rem;
+    border-radius: 6px;
+    font-size: 0.92rem;
+    min-height: 1.2em;
+  }
+  .status.info { background: var(--color-info-bg); color: var(--color-info-text); }
+  .status.success { background: var(--color-success-bg); color: var(--color-success-text); }
+  .status.warning { background: var(--color-warning-bg); color: var(--color-warning-text); }
+  .status.error { background: var(--color-error-bg); color: var(--color-error-text); }
+  .status.empty { display: none; }
+  .result-overview h3 {
+    margin-top: 0;
+  }
+  .result-overview ul {
+    margin: 0.5rem 0;
+    padding-left: 1.4rem;
+  }
+  .warning-banner {
+    background: var(--color-warning-bg);
+    color: var(--color-warning-text);
+    padding: 0.65rem 0.9rem;
+    border-radius: 6px;
+    margin: 0.75rem 0 0.25rem 0;
+    font-weight: 600;
+  }
+  .error-list li {
+    color: var(--color-error-text);
+  }
+  details.selftest-section summary {
+    cursor: pointer;
+    font-weight: 600;
+    padding: 0.25rem 0;
+  }
+  table.test-table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 0.75rem;
+    font-size: 0.85rem;
+  }
+  table.test-table th, table.test-table td {
+    border: 1px solid var(--color-border);
+    padding: 0.35rem 0.5rem;
+    text-align: left;
+    vertical-align: top;
+  }
+  table.test-table th {
+    background: var(--color-bg);
+  }
+  .pass { color: var(--color-success-text); font-weight: 600; }
+  .fail { color: var(--color-error-text); font-weight: 600; }
+  .test-summary {
+    margin-top: 0.5rem;
+    font-weight: 600;
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>MOCO → ABACUS XML-Anreicherung</h1>
+  <p class="subtitle">Ergänzt Geschäftsbereich und Zahlstelle in jeder Abrechnung eines MOCO-XML-Exports.</p>
+
+  <div class="panel">
+    <div id="dropzone" class="dropzone" tabindex="0" role="button" aria-label="XML-Datei hier ablegen oder auswählen">
+      <p><strong>XML-Datei hier ablegen</strong></p>
+      <p class="hint">oder</p>
+      <button id="selectFileBtn" type="button" class="secondary">Datei auswählen</button>
+      <input type="file" id="fileInput" accept=".xml,text/xml,application/xml" hidden>
+    </div>
+    <div id="fileNameDisplay" class="filename"></div>
+    <p class="privacy-note">🔒 Die Datei wird ausschließlich lokal in Ihrem Browser verarbeitet. Es findet keine Übertragung an einen Server statt.</p>
+
+    <div class="actions">
+      <button id="enrichBtn" type="button" disabled>XML anreichern</button>
+      <button id="downloadBtn" type="button" disabled>Ergebnis herunterladen</button>
+      <button id="listBtn" type="button" class="secondary" disabled>Abrechnungsliste</button>
+    </div>
+
+    <div id="statusArea" class="status empty" role="status"></div>
+  </div>
+
+  <div id="resultOverview" class="panel result-overview" hidden></div>
+
+  <details class="panel selftest-section">
+    <summary>Selbsttests</summary>
+    <p class="hint" style="color: var(--color-muted); font-size: 0.85rem;">
+      Prüft die Verarbeitungslogik anhand von 21 Testfällen mit synthetischen XML-Beispielen
+      (keine Auswirkung auf eine ggf. geladene Datei). Kann auch über die Entwicklerkonsole mit
+      <code>runMocoSelfTests()</code> ausgeführt werden.
+    </p>
+    <button id="runTestsBtn" type="button" class="secondary">Selbsttests ausführen</button>
+    <div id="testResults"></div>
+  </details>
+</div>
+
+<script>
+(function () {
+  "use strict";
+
+  /* ======================================================================
+   * ZENTRALE KONFIGURATION
+   * ----------------------------------------------------------------------
+   * Hier werden alle fest einzutragenden Werte, Elementnamen und der
+   * erwartete XML-Pfad definiert. Für eine spätere Anpassung (z. B. neue
+   * Werte, andere Feldnamen) reicht es, ausschließlich diesen Block zu
+   * ändern - der restliche Code arbeitet vollständig darüber gesteuert.
+   * ====================================================================== */
+  var CONFIG = {
+    // Name des Wurzelelements des MOCO-Exports
+    rootElementName: "AbaConnectContainer",
+    // Name des Elements, das eine Gruppe von Buchungen zusammenfasst
+    taskElementName: "Task",
+    // Name des Elements, das eine einzelne Transaktion innerhalb eines Task darstellt
+    transactionElementName: "Transaction",
+    // Name des Elements, das eine einzelne "Abrechnung" repräsentiert
+    // (Pfad: Task -> Transaction -> Document)
+    invoiceElementName: "Document",
+    // Suffix, der an den Dateinamen der Ergebnisdatei angehängt wird
+    outputSuffix: "_angereichert",
+    // Die Zusatzinformationen, die in jeder Abrechnung sichergestellt werden.
+    // - Existiert das Feld bereits, wird nur der Wert geprüft/korrigiert,
+    //   die Position bleibt unverändert.
+    // - Fehlt das Feld, wird es neu erzeugt und direkt NACH dem Element
+    //   mit dem Namen "insertAfterLocalName" eingefügt.
+    fields: [
+      { localName: "Division", value: "390", insertAfterLocalName: "CustomerNumber" },
+      { localName: "PaymentOrderProcedure", value: "3920", insertAfterLocalName: "Amount" }
+    ],
+    // Umbenennung eines Feldes bei den Dossier-Einträgen.
+    // Tatsächlicher Pfad laut Referenzdatei: Task -> Transaction ->
+    // DocumentDossier -> Dossier -> DocumentName (eine Ebene tiefer als
+    // "DocumentDossier" selbst, da DocumentDossier bereits ein eigenes,
+    // unabhängiges <Number>-Element mit der Belegnummer besitzt).
+    dossierElementName: "DocumentDossier",
+    dossierEntryElementName: "Dossier",
+    rename: { from: "DocumentName", to: "Number" },
+    // Name des Elements mit den Kunden-Stammdaten (Pfad: Task -> Transaction
+    // -> Customer). Wird nur für die Abrechnungsliste (XLS-Export) über
+    // CustomerNumber mit der jeweiligen Abrechnung verknüpft - die
+    // eigentliche XML-Anreicherung bleibt davon unberührt.
+    customerElementName: "Customer"
+  };
+
+  /* ======================================================================
+   * ANWENDUNGSSTATUS (bewusst minimal gehalten)
+   * ====================================================================== */
+  var state = {
+    fileName: null,
+    xmlText: null,
+    serializedXml: null,
+    outputFileName: null,
+    // Alle Feldinformationen der erfolgreich verarbeiteten Abrechnungen aus
+    // dem letzten Verarbeitungslauf, für die Abrechnungsliste (XLS-Export).
+    invoiceRows: []
+  };
+
+  /* ======================================================================
+   * NAMESPACE-UNABHÄNGIGE DOM-HILFSFUNKTIONEN
+   * ----------------------------------------------------------------------
+   * Es wird bewusst NICHT anhand von Tag-Präfixen (z. B. "ns1:Document")
+   * gesucht, da sich Präfixe je nach Exportquelle unterscheiden können.
+   * Stattdessen wird ausschließlich über localName gefiltert, was
+   * unabhängig vom verwendeten Namespace-Präfix funktioniert.
+   * ====================================================================== */
+  function getDirectChildrenByLocalName(el, localName) {
+    var result = [];
+    for (var i = 0; i < el.children.length; i++) {
+      if (el.children[i].localName === localName) {
+        result.push(el.children[i]);
+      }
+    }
+    return result;
+  }
+
+  function getDirectChildTextByLocalName(el, localName) {
+    var matches = getDirectChildrenByLocalName(el, localName);
+    if (matches.length === 0) return null;
+    var text = (matches[0].textContent || "").trim();
+    return text === "" ? null : text;
+  }
+
+  /* ======================================================================
+   * DATEIEINLESUNG (nur im UI-Teil, siehe unten) und XML-VALIDIERUNG
+   * ====================================================================== */
+  function parseXmlOrThrow(xmlText) {
+    if (typeof xmlText !== "string" || xmlText.trim() === "") {
+      throw new Error("Die Datei ist leer oder enthält keinen lesbaren Inhalt.");
+    }
+    var parser = new DOMParser();
+    var doc = parser.parseFromString(xmlText, "application/xml");
+    var errorNode = doc.getElementsByTagName("parsererror")[0];
+    if (errorNode) {
+      var firstLine = (errorNode.textContent || "Unbekannter Fehler").trim().split("\n")[0];
+      throw new Error("Die Datei enthält ungültiges XML: " + firstLine);
+    }
+    return doc;
+  }
+
+  function validateRootOrThrow(doc) {
+    var root = doc.documentElement;
+    if (!root || root.localName !== CONFIG.rootElementName) {
+      var found = root ? root.localName : "(kein Element)";
+      throw new Error(
+        "Das erwartete übergeordnete Element '" + CONFIG.rootElementName +
+        "' wurde nicht gefunden (gefunden: '" + found + "'). " +
+        "Es handelt sich möglicherweise nicht um einen MOCO-XML-Export."
+      );
+    }
+    return root;
+  }
+
+  /* ======================================================================
+   * ERKENNUNG DER ABRECHNUNGEN
+   * ----------------------------------------------------------------------
+   * Eine "Abrechnung" ist jedes Element mit dem Namen CONFIG.invoiceElementName
+   * ("Document"), das dem Pfad Task -> Transaction -> Document folgt. Es wird
+   * bewusst NICHT nach Parameter/Id (z. B. "Belege") gefiltert, da der Pfad
+   * an sich schon eindeutig ist: Kunden- und Belegdossier-Tasks enthalten
+   * ohnehin keine Document-Elemente und werden dadurch automatisch übersprungen.
+   * ====================================================================== */
+  function findInvoices(rootEl) {
+    var invoices = [];
+    var tasks = getDirectChildrenByLocalName(rootEl, CONFIG.taskElementName);
+    for (var t = 0; t < tasks.length; t++) {
+      var transactions = getDirectChildrenByLocalName(tasks[t], CONFIG.transactionElementName);
+      for (var tr = 0; tr < transactions.length; tr++) {
+        var documents = getDirectChildrenByLocalName(transactions[tr], CONFIG.invoiceElementName);
+        for (var d = 0; d < documents.length; d++) {
+          invoices.push({ documentEl: documents[d], transactionEl: transactions[tr], taskEl: tasks[t] });
+        }
+      }
+    }
+    return invoices;
+  }
+
+  function getInvoiceLabel(documentEl, transactionEl, index) {
+    var number = getDirectChildTextByLocalName(documentEl, "Number");
+    if (number) return "Beleg Nr. " + number;
+    var reference = getDirectChildTextByLocalName(documentEl, "Reference");
+    if (reference) return "Beleg Ref. " + reference;
+    var txId = transactionEl && transactionEl.getAttribute ? transactionEl.getAttribute("id") : null;
+    if (txId) return "Transaktion " + txId;
+    return "Abrechnung #" + (index + 1);
+  }
+
+  // Wandelt ein Element (z. B. eine Abrechnung) in eine flache Zeile aus
+  // Spaltenname -> Textwert um, für die Abrechnungsliste (XLS-Export).
+  // Die Spaltennamen entsprechen 1:1 den XML-Elementnamen. Verschachtelte
+  // Elemente (z. B. LineItem, PaymentTerm) werden per Punkt-Notation
+  // aufgelöst ("LineItem.Amount"); kommt ein Elementname mehrfach auf
+  // derselben Ebene vor, wird er durchnummeriert ("LineItem1.Amount",
+  // "LineItem2.Amount", ...). Attribute erscheinen als "@name".
+  function flattenElementToRow(el, prefix) {
+    prefix = prefix || "";
+    var row = {};
+
+    for (var a = 0; a < el.attributes.length; a++) {
+      var attr = el.attributes[a];
+      row[prefix + "@" + attr.name] = attr.value;
+    }
+
+    var children = Array.prototype.slice.call(el.children);
+    var nameCounts = {};
+    children.forEach(function (c) { nameCounts[c.localName] = (nameCounts[c.localName] || 0) + 1; });
+    var seenIndex = {};
+
+    children.forEach(function (child) {
+      var name = child.localName;
+      var suffix = "";
+      if (nameCounts[name] > 1) {
+        seenIndex[name] = (seenIndex[name] || 0) + 1;
+        suffix = String(seenIndex[name]);
+      }
+      var key = prefix + name + suffix;
+      if (child.children.length > 0) {
+        var nested = flattenElementToRow(child, key + ".");
+        Object.keys(nested).forEach(function (nk) { row[nk] = nested[nk]; });
+      } else {
+        row[key] = (child.textContent || "").trim();
+      }
+    });
+
+    return row;
+  }
+
+  /* ======================================================================
+   * TRANSFORMATION EINER EINZELNEN ABRECHNUNG
+   * ====================================================================== */
+  function validateInvoiceStructureOrThrow(documentEl) {
+    for (var i = 0; i < CONFIG.fields.length; i++) {
+      var name = CONFIG.fields[i].localName;
+      var matches = getDirectChildrenByLocalName(documentEl, name);
+      if (matches.length > 1) {
+        throw new Error(
+          "Es wurden mehrere Elemente '" + name + "' gefunden - die Struktur dieser Abrechnung " +
+          "ist nicht eindeutig, sie wird übersprungen."
+        );
+      }
+    }
+  }
+
+  // Ermittelt die im restlichen Dokument verwendete Einrückung, damit neu
+  // eingefügte Elemente optisch zum Rest der Datei passen.
+  function getChildIndent(documentEl) {
+    var node = documentEl.firstChild;
+    while (node) {
+      if (node.nodeType === Node.TEXT_NODE && node.nextSibling && node.nextSibling.nodeType === Node.ELEMENT_NODE) {
+        var match = /\n[ \t]*$/.exec(node.textContent);
+        if (match) return match[0];
+      }
+      node = node.nextSibling;
+    }
+    return "\n        "; // Fallback: 8 Leerzeichen (typische MOCO-Einrückungstiefe)
+  }
+
+  // Stellt sicher, dass ein einzelnes Feld in der Abrechnung mit dem
+  // korrekten Sollwert existiert:
+  // - Existiert es bereits, wird nur der Wert geprüft/ggf. korrigiert;
+  //   die bestehende Position bleibt unangetastet.
+  // - Fehlt es, wird ein neues Element erzeugt und direkt nach dem durch
+  //   field.insertAfterLocalName benannten Geschwister-Element eingefügt.
+  //   Fehlt dieses Bezugselement selbst, wird ein Fehler ausgelöst (die
+  //   vorgesehene Einfügeposition konnte nicht gefunden werden).
+  function ensureField(documentEl, field) {
+    var matches = getDirectChildrenByLocalName(documentEl, field.localName);
+    var existing = matches.length > 0 ? matches[0] : null;
+
+    if (existing) {
+      var currentValue = (existing.textContent || "").trim();
+      if (currentValue === field.value) {
+        return "kept";
+      }
+      existing.textContent = field.value;
+      return "corrected";
+    }
+
+    var anchorMatches = getDirectChildrenByLocalName(documentEl, field.insertAfterLocalName);
+    if (anchorMatches.length === 0) {
+      throw new Error(
+        "Die vorgesehene Einfügeposition für '" + field.localName + "' wurde nicht gefunden " +
+        "(erwartetes Bezugselement '" + field.insertAfterLocalName + "' fehlt in dieser Abrechnung)."
+      );
+    }
+    var anchor = anchorMatches[0];
+    var qualifiedName = documentEl.prefix ? documentEl.prefix + ":" + field.localName : field.localName;
+    var newEl = documentEl.ownerDocument.createElementNS(documentEl.namespaceURI, qualifiedName);
+    newEl.textContent = field.value;
+
+    var indent = getChildIndent(documentEl);
+    var referenceNode = anchor.nextSibling;
+    documentEl.insertBefore(documentEl.ownerDocument.createTextNode(indent), referenceNode);
+    documentEl.insertBefore(newEl, referenceNode);
+
+    return "added";
+  }
+
+  function transformInvoice(documentEl) {
+    validateInvoiceStructureOrThrow(documentEl);
+    var actions = {};
+    CONFIG.fields.forEach(function (field) {
+      actions[field.localName] = ensureField(documentEl, field);
+    });
+    return actions;
+  }
+
+  /* ======================================================================
+   * DOSSIER-EINTRÄGE (Umbenennung DocumentName -> Number)
+   * ----------------------------------------------------------------------
+   * Eigener Verarbeitungspfad, unabhängig von den Abrechnungen: betrifft
+   * Task -> Transaction -> DocumentDossier -> Dossier. Ein fehlendes
+   * "DocumentDossier"-Task ist KEIN Fehler (z. B. Export ohne Belegdossiers).
+   * ====================================================================== */
+  function findDossierEntries(rootEl) {
+    var entries = [];
+    var tasks = getDirectChildrenByLocalName(rootEl, CONFIG.taskElementName);
+    for (var t = 0; t < tasks.length; t++) {
+      var transactions = getDirectChildrenByLocalName(tasks[t], CONFIG.transactionElementName);
+      for (var tr = 0; tr < transactions.length; tr++) {
+        var containers = getDirectChildrenByLocalName(transactions[tr], CONFIG.dossierElementName);
+        for (var c = 0; c < containers.length; c++) {
+          var dossierEls = getDirectChildrenByLocalName(containers[c], CONFIG.dossierEntryElementName);
+          for (var d = 0; d < dossierEls.length; d++) {
+            entries.push({ dossierEl: dossierEls[d], containerEl: containers[c], transactionEl: transactions[tr] });
+          }
+        }
+      }
+    }
+    return entries;
+  }
+
+  // Die Belegnummer sitzt als eigenständiges <Number>-Element direkt im
+  // DocumentDossier-Container (nicht im Dossier selbst) und dient hier nur
+  // zur Beschriftung in Meldungen/Ergebnisübersicht.
+  function getDossierEntryLabel(containerEl, transactionEl, index) {
+    var belegNumber = getDirectChildTextByLocalName(containerEl, "Number");
+    if (belegNumber) return "Beleg Nr. " + belegNumber;
+    var txId = transactionEl && transactionEl.getAttribute ? transactionEl.getAttribute("id") : null;
+    if (txId) return "Transaktion " + txId;
+    return "Dossier-Eintrag #" + (index + 1);
+  }
+
+  // Erzeugt ein neues Element mit anderem Namen, übernimmt Attribute und
+  // Kindknoten (inkl. Textinhalt) unverändert und ersetzt das alte Element
+  // an derselben Position im Baum.
+  function renameElement(oldEl, newLocalName) {
+    var ownerDoc = oldEl.ownerDocument;
+    var qualifiedName = oldEl.prefix ? oldEl.prefix + ":" + newLocalName : newLocalName;
+    var newEl = ownerDoc.createElementNS(oldEl.namespaceURI, qualifiedName);
+    for (var i = 0; i < oldEl.attributes.length; i++) {
+      var attr = oldEl.attributes[i];
+      if (attr.namespaceURI) {
+        newEl.setAttributeNS(attr.namespaceURI, attr.name, attr.value);
+      } else {
+        newEl.setAttribute(attr.name, attr.value);
+      }
+    }
+    while (oldEl.firstChild) {
+      newEl.appendChild(oldEl.firstChild);
+    }
+    oldEl.parentNode.replaceChild(newEl, oldEl);
+    return newEl;
+  }
+
+  function transformDossierEntry(dossierEl) {
+    var fromMatches = getDirectChildrenByLocalName(dossierEl, CONFIG.rename.from);
+    var toMatches = getDirectChildrenByLocalName(dossierEl, CONFIG.rename.to);
+
+    if (fromMatches.length > 1 || toMatches.length > 1) {
+      throw new Error(
+        "Es wurden mehrere Elemente '" + CONFIG.rename.from + "' bzw. '" + CONFIG.rename.to +
+        "' gefunden - die Struktur dieses Dossier-Eintrags ist nicht eindeutig, er wird übersprungen."
+      );
+    }
+    if (fromMatches.length === 1) {
+      renameElement(fromMatches[0], CONFIG.rename.to);
+      return "renamed";
+    }
+    if (toMatches.length === 1) {
+      return "kept";
+    }
+    throw new Error(
+      "Weder '" + CONFIG.rename.from + "' noch '" + CONFIG.rename.to + "' wurde in diesem Dossier-Eintrag gefunden."
+    );
+  }
+
+  /* ======================================================================
+   * ZUSATZDATEN FÜR DIE ABRECHNUNGSLISTE (Kunden-Stammdaten, Dossier/Datei-
+   * Informationen)
+   * ----------------------------------------------------------------------
+   * Für einen vollständigen Buchhaltungs-Datensatz genügen die reinen
+   * Document-Felder nicht: Kundenname/-adresse stehen im "Kunden"-Task,
+   * Dateiname/Belegnummer-Zuordnung im "BelegDossier"-Task. Beide werden
+   * hier je Beleg per Nummer nachgeschlagen und in die Abrechnungsliste
+   * eingemischt - die eigentliche XML-Ausgabe bleibt davon unberührt.
+   * ====================================================================== */
+  // Kunden-Stammdaten nach CustomerNumber, verknüpft über Document.CustomerNumber.
+  function buildCustomerLookupByNumber(rootEl) {
+    var lookup = {};
+    var tasks = getDirectChildrenByLocalName(rootEl, CONFIG.taskElementName);
+    tasks.forEach(function (taskEl) {
+      var transactions = getDirectChildrenByLocalName(taskEl, CONFIG.transactionElementName);
+      transactions.forEach(function (transactionEl) {
+        var customers = getDirectChildrenByLocalName(transactionEl, CONFIG.customerElementName);
+        customers.forEach(function (customerEl) {
+          var customerNumber = getDirectChildTextByLocalName(customerEl, "CustomerNumber");
+          if (customerNumber) {
+            lookup[customerNumber] = flattenElementToRow(customerEl, "Customer.");
+          }
+        });
+      });
+    });
+    return lookup;
+  }
+
+  // Dossier/Datei-Informationen nach Belegnummer, verknüpft über
+  // Document.Number <-> DocumentDossier.Number. Wird NACH der Umbenennung
+  // DocumentName -> Number aufgerufen, damit die Abrechnungsliste bereits
+  // den finalen Feldnamen/-wert zeigt.
+  function buildDossierLookupByBelegNumber(dossierEntries) {
+    var lookup = {};
+    dossierEntries.forEach(function (entry) {
+      var belegNumber = getDirectChildTextByLocalName(entry.containerEl, "Number");
+      if (belegNumber) {
+        lookup[belegNumber] = flattenElementToRow(entry.containerEl, "DocumentDossier.");
+      }
+    });
+    return lookup;
+  }
+
+  function mergeInto(target, source) {
+    if (!source) return;
+    Object.keys(source).forEach(function (key) { target[key] = source[key]; });
+  }
+
+  /* ======================================================================
+   * VERARBEITUNG ALLER ABRECHNUNGEN (Orchestrierung)
+   * ====================================================================== */
+  function createEmptyFieldStats() {
+    var stats = {};
+    CONFIG.fields.forEach(function (f) {
+      stats[f.localName] = { added: 0, kept: 0, corrected: 0 };
+    });
+    return stats;
+  }
+
+  function serializeDocument(doc, originalXmlText) {
+    var serializer = new XMLSerializer();
+    var xmlString = serializer.serializeToString(doc);
+    var declarationMatch = /^\s*<\?xml[^?]*\?>/.exec(originalXmlText);
+    if (declarationMatch && !/^\s*<\?xml/.test(xmlString)) {
+      xmlString = declarationMatch[0] + "\n" + xmlString;
+    }
+    return xmlString;
+  }
+
+  // Zentrale Einstiegsfunktion: parst, validiert, erkennt Abrechnungen,
+  // transformiert jede einzelne und liefert Statistik + Ergebnis-XML.
+  function processXmlString(xmlText) {
+    var result = {
+      ok: true,
+      fatalError: null,
+      invoiceCount: 0,
+      processedCount: 0,
+      errorCount: 0,
+      fieldStats: createEmptyFieldStats(),
+      invoiceResults: [],
+      invoiceErrors: [],
+      dossierCount: 0,
+      dossierProcessedCount: 0,
+      dossierErrorCount: 0,
+      dossierRenamedCount: 0,
+      dossierAlreadyRenamedCount: 0,
+      dossierErrors: [],
+      serializedXml: null
+    };
+
+    var doc;
+    try {
+      doc = parseXmlOrThrow(xmlText);
+      validateRootOrThrow(doc);
+    } catch (err) {
+      result.ok = false;
+      result.fatalError = err.message;
+      return result;
+    }
+
+    var root = doc.documentElement;
+    var invoices = findInvoices(root);
+    result.invoiceCount = invoices.length;
+
+    if (invoices.length === 0) {
+      result.ok = false;
+      result.fatalError =
+        "Es wurde keine Abrechnung erkannt (kein Element '" + CONFIG.invoiceElementName +
+        "' innerhalb von " + CONFIG.taskElementName + "/" + CONFIG.transactionElementName + " gefunden).";
+      return result;
+    }
+
+    // Abrechnungen zunächst nur transformieren (Division/PaymentOrderProcedure);
+    // die vollständigen Feldwerte für die Abrechnungsliste werden erst am Ende
+    // zusammengestellt, wenn auch die Dossier-Umbenennung abgeschlossen ist.
+    var invoiceOutcomes = [];
+    invoices.forEach(function (invoice, index) {
+      var label = getInvoiceLabel(invoice.documentEl, invoice.transactionEl, index);
+      try {
+        var actions = transformInvoice(invoice.documentEl);
+        Object.keys(actions).forEach(function (fieldName) {
+          result.fieldStats[fieldName][actions[fieldName]]++;
+        });
+        invoiceOutcomes.push({ label: label, ok: true, actions: actions, documentEl: invoice.documentEl });
+        result.processedCount++;
+      } catch (err) {
+        invoiceOutcomes.push({ label: label, ok: false, message: err.message });
+        result.invoiceErrors.push({ label: label, message: err.message });
+        result.errorCount++;
+      }
+    });
+
+    // Dossier-Einträge sind optional: 0 Treffer ist kein Fehler.
+    var dossierEntries = findDossierEntries(root);
+    result.dossierCount = dossierEntries.length;
+    dossierEntries.forEach(function (entry, index) {
+      var label = getDossierEntryLabel(entry.containerEl, entry.transactionEl, index);
+      try {
+        var action = transformDossierEntry(entry.dossierEl);
+        if (action === "renamed") result.dossierRenamedCount++;
+        if (action === "kept") result.dossierAlreadyRenamedCount++;
+        result.dossierProcessedCount++;
+      } catch (err) {
+        result.dossierErrors.push({ label: label, message: err.message });
+        result.dossierErrorCount++;
+      }
+    });
+
+    // Zusatzdaten für die Abrechnungsliste erst jetzt nachschlagen: die
+    // Kunden-Stammdaten sind unabhängig, die Dossier-Daten sollen aber den
+    // finalen Feldnamen (Number statt DocumentName) zeigen.
+    var customersByNumber = buildCustomerLookupByNumber(root);
+    var dossierByBelegNumber = buildDossierLookupByBelegNumber(dossierEntries);
+
+    invoiceOutcomes.forEach(function (outcome) {
+      if (!outcome.ok) {
+        result.invoiceResults.push({ label: outcome.label, ok: false, message: outcome.message });
+        return;
+      }
+      var fields = flattenElementToRow(outcome.documentEl);
+      mergeInto(fields, customersByNumber[fields.CustomerNumber]);
+      mergeInto(fields, dossierByBelegNumber[fields.Number]);
+      result.invoiceResults.push({ label: outcome.label, ok: true, actions: outcome.actions, fields: fields });
+    });
+
+    result.serializedXml = serializeDocument(doc, xmlText);
+    return result;
+  }
+
+  /* ======================================================================
+   * DATEINAME FÜR DIE ERGEBNISDATEI
+   * ====================================================================== */
+  function buildOutputFileName(originalName) {
+    if (/\.xml$/i.test(originalName)) {
+      return originalName.replace(/\.xml$/i, "") + CONFIG.outputSuffix + ".xml";
+    }
+    return originalName + CONFIG.outputSuffix + ".xml";
+  }
+
+  /* ======================================================================
+   * UI-HILFSFUNKTIONEN
+   * ====================================================================== */
+  function escapeHtml(str) {
+    return String(str).replace(/[&<>"']/g, function (ch) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch];
+    });
+  }
+
+  // Escaping für Textinhalte in der generierten XLS-XML-Datei (dieselben
+  // Sonderzeichen wie bei HTML, aber bewusst als eigene Funktion benannt,
+  // um die beiden Ausgabeziele nicht gedanklich zu vermischen).
+  function escapeXml(str) {
+    return String(str).replace(/[&<>"']/g, function (ch) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" }[ch];
+    });
+  }
+
+  var dropzone = document.getElementById("dropzone");
+  var fileInput = document.getElementById("fileInput");
+  var selectFileBtn = document.getElementById("selectFileBtn");
+  var fileNameDisplay = document.getElementById("fileNameDisplay");
+  var enrichBtn = document.getElementById("enrichBtn");
+  var downloadBtn = document.getElementById("downloadBtn");
+  var listBtn = document.getElementById("listBtn");
+  var statusArea = document.getElementById("statusArea");
+  var resultOverview = document.getElementById("resultOverview");
+
+  function showStatus(message, kind) {
+    statusArea.textContent = message;
+    statusArea.className = "status " + (kind || "info");
+  }
+
+  function clearStatus() {
+    statusArea.textContent = "";
+    statusArea.className = "status empty";
+  }
+
+  function resetForNewFile() {
+    state.fileName = null;
+    state.xmlText = null;
+    state.serializedXml = null;
+    state.outputFileName = null;
+    state.invoiceRows = [];
+    enrichBtn.disabled = true;
+    downloadBtn.disabled = true;
+    listBtn.disabled = true;
+    resultOverview.hidden = true;
+    resultOverview.innerHTML = "";
+    clearStatus();
+  }
+
+  /* ---------------------------------------------------------------------
+   * Dateieinlesung
+   * ------------------------------------------------------------------- */
+  function handleFile(file) {
+    resetForNewFile();
+    if (!file) return;
+
+    state.fileName = file.name;
+    fileNameDisplay.textContent = "Ausgewählte Datei: " + file.name;
+
+    if (!/\.xml$/i.test(file.name)) {
+      showStatus("Die ausgewählte Datei ist keine XML-Datei.", "error");
+      return;
+    }
+
+    showStatus("Datei wird gelesen…", "info");
+    var reader = new FileReader();
+    reader.onerror = function () {
+      showStatus("Die Datei konnte nicht gelesen werden.", "error");
+    };
+    reader.onload = function (e) {
+      state.xmlText = e.target.result;
+      precheckFile();
+    };
+    reader.readAsText(file, "UTF-8");
+  }
+
+  // Leichte Vorprüfung direkt nach dem Laden: Struktur erkennen, aber noch
+  // nicht verändern. Erst ein Klick auf "XML anreichern" löst die eigentliche
+  // Transformation aus.
+  function precheckFile() {
+    showStatus("Struktur wird geprüft…", "info");
+    try {
+      var doc = parseXmlOrThrow(state.xmlText);
+      var root = validateRootOrThrow(doc);
+      var invoices = findInvoices(root);
+      if (invoices.length === 0) {
+        showStatus(
+          "Es wurde keine Abrechnung erkannt (kein Element '" + CONFIG.invoiceElementName +
+          "' innerhalb von " + CONFIG.taskElementName + "/" + CONFIG.transactionElementName + " gefunden).",
+          "error"
+        );
+        return;
+      }
+      showStatus(
+        "Datei gültig - " + invoices.length + " Abrechnung(en) erkannt. Bereit zur Verarbeitung.",
+        "success"
+      );
+      enrichBtn.disabled = false;
+    } catch (err) {
+      showStatus(err.message, "error");
+    }
+  }
+
+  /* ---------------------------------------------------------------------
+   * Ergebnisstatistik / Darstellung
+   * ------------------------------------------------------------------- */
+  function renderResult(result) {
+    if (!result.ok) {
+      showStatus(result.fatalError, "error");
+      resultOverview.hidden = true;
+      downloadBtn.disabled = true;
+      listBtn.disabled = true;
+      return;
+    }
+
+    state.serializedXml = result.serializedXml;
+    state.outputFileName = buildOutputFileName(state.fileName);
+    state.invoiceRows = result.invoiceResults
+      .filter(function (ir) { return ir.ok; })
+      .map(function (ir) { return { label: ir.label, fields: ir.fields }; });
+
+    var f1 = CONFIG.fields[0];
+    var f2 = CONFIG.fields[1];
+    var s1 = result.fieldStats[f1.localName];
+    var s2 = result.fieldStats[f2.localName];
+
+    var html = "<h3>Ergebnisübersicht</h3><ul>";
+    html += "<li>Erkannte Abrechnungen: " + result.invoiceCount + "</li>";
+    html += "<li>Erfolgreich verarbeitet: " + result.processedCount + "</li>";
+    html += "<li>Abrechnungen mit Fehlern: " + result.errorCount + "</li>";
+    html += "<li>'" + f1.localName + "' neu ergänzt: " + s1.added + "</li>";
+    html += "<li>'" + f2.localName + "' neu ergänzt: " + s2.added + "</li>";
+    html += "<li>'" + f1.localName + "' bereits korrekt vorhanden: " + s1.kept + "</li>";
+    html += "<li>'" + f2.localName + "' bereits korrekt vorhanden: " + s2.kept + "</li>";
+    html += "<li>'" + f1.localName + "' korrigiert (abweichender Wert): " + s1.corrected + "</li>";
+    html += "<li>'" + f2.localName + "' korrigiert (abweichender Wert): " + s2.corrected + "</li>";
+    html += "</ul>";
+
+    if (result.errorCount > 0) {
+      html += "<div class=\"warning-banner\">⚠ Achtung: " + result.errorCount + " von " + result.invoiceCount +
+        " Abrechnung(en) konnten NICHT angereichert werden und bleiben im Ergebnis unverändert. " +
+        "Bitte prüfen Sie diese Fälle vor der Weitergabe:</div>";
+      html += "<ul class=\"error-list\">";
+      result.invoiceErrors.forEach(function (e) {
+        html += "<li><strong>" + escapeHtml(e.label) + ":</strong> " + escapeHtml(e.message) + "</li>";
+      });
+      html += "</ul>";
+    }
+
+    if (result.dossierCount > 0) {
+      html += "<h3>Dossier-Einträge ('" + CONFIG.rename.from + "' → '" + CONFIG.rename.to + "')</h3><ul>";
+      html += "<li>Gefundene Dossier-Einträge: " + result.dossierCount + "</li>";
+      html += "<li>Erfolgreich verarbeitet: " + result.dossierProcessedCount + "</li>";
+      html += "<li>Einträge mit Fehlern: " + result.dossierErrorCount + "</li>";
+      html += "<li>umbenannt: " + result.dossierRenamedCount + "</li>";
+      html += "<li>bereits korrekt benannt: " + result.dossierAlreadyRenamedCount + "</li>";
+      html += "</ul>";
+
+      if (result.dossierErrorCount > 0) {
+        html += "<div class=\"warning-banner\">⚠ Achtung: " + result.dossierErrorCount + " von " + result.dossierCount +
+          " Dossier-Eintrag/Einträge konnten NICHT umbenannt werden und bleiben im Ergebnis unverändert. " +
+          "Bitte prüfen Sie diese Fälle vor der Weitergabe:</div>";
+        html += "<ul class=\"error-list\">";
+        result.dossierErrors.forEach(function (e) {
+          html += "<li><strong>" + escapeHtml(e.label) + ":</strong> " + escapeHtml(e.message) + "</li>";
+        });
+        html += "</ul>";
+      }
+    }
+
+    resultOverview.innerHTML = html;
+    resultOverview.hidden = false;
+
+    var hasAnyError = result.errorCount > 0 || result.dossierErrorCount > 0;
+    if (hasAnyError) {
+      showStatus(
+        "Verarbeitung mit Einschränkungen abgeschlossen: " + result.errorCount + " von " + result.invoiceCount +
+        " Abrechnung(en) und " + result.dossierErrorCount + " von " + result.dossierCount +
+        " Dossier-Eintrag/Einträge konnten nicht verarbeitet werden.",
+        "warning"
+      );
+    } else {
+      showStatus(
+        "Verarbeitung erfolgreich abgeschlossen. Alle " + result.processedCount + " Abrechnung(en) wurden angereichert" +
+        (result.dossierCount > 0 ? " und alle " + result.dossierProcessedCount + " Dossier-Einträge umbenannt." : "."),
+        "success"
+      );
+    }
+    downloadBtn.disabled = false;
+    listBtn.disabled = state.invoiceRows.length === 0;
+  }
+
+  /* ---------------------------------------------------------------------
+   * Download
+   * ------------------------------------------------------------------- */
+  function downloadResult() {
+    try {
+      var blob = new Blob([state.serializedXml], { type: "application/xml;charset=utf-8" });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement("a");
+      a.href = url;
+      a.download = state.outputFileName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+    } catch (err) {
+      showStatus("Die Datei konnte nicht heruntergeladen werden: " + err.message, "error");
+    }
+  }
+
+  /* ---------------------------------------------------------------------
+   * Abrechnungsliste (echter .xlsx-Export)
+   * ----------------------------------------------------------------------
+   * Eine .xlsx-Datei ist technisch ein ZIP-Archiv mit XML-Teilen (OOXML).
+   * Damit Excel die Datei ohne Formatwarnung öffnet, wird hier ein
+   * minimaler ZIP-Writer (Methode "stored", also unkomprimiert - dafür
+   * ohne Deflate-Implementierung) direkt in JavaScript gebaut, ganz ohne
+   * externe Bibliothek.
+   * ------------------------------------------------------------------- */
+
+  // CRC32 nach dem Standardalgorithmus (Tabellen-Verfahren), wird vom
+  // ZIP-Format für jeden Dateieintrag benötigt.
+  function crc32(bytes) {
+    if (!crc32.table) {
+      var table = new Uint32Array(256);
+      for (var n = 0; n < 256; n++) {
+        var c = n;
+        for (var k = 0; k < 8; k++) {
+          c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+        }
+        table[n] = c;
+      }
+      crc32.table = table;
+    }
+    var crc = 0xFFFFFFFF;
+    for (var i = 0; i < bytes.length; i++) {
+      crc = crc32.table[(crc ^ bytes[i]) & 0xFF] ^ (crc >>> 8);
+    }
+    return (crc ^ 0xFFFFFFFF) >>> 0;
+  }
+
+  // Baut ein unkomprimiertes ZIP-Archiv aus files: [{ name, data: Uint8Array }].
+  function buildZip(files) {
+    var encoder = new TextEncoder();
+    var localParts = [];
+    var centralParts = [];
+    var offset = 0;
+
+    files.forEach(function (file) {
+      var nameBytes = encoder.encode(file.name);
+      var data = file.data;
+      var crc = crc32(data);
+      var size = data.length;
+
+      var localHeader = new Uint8Array(30 + nameBytes.length);
+      var ldv = new DataView(localHeader.buffer);
+      ldv.setUint32(0, 0x04034b50, true);
+      ldv.setUint16(4, 20, true);
+      ldv.setUint16(6, 0, true);
+      ldv.setUint16(8, 0, true); // Methode 0 = stored (unkomprimiert)
+      ldv.setUint16(10, 0, true);
+      ldv.setUint16(12, 0x21, true);
+      ldv.setUint32(14, crc, true);
+      ldv.setUint32(18, size, true);
+      ldv.setUint32(22, size, true);
+      ldv.setUint16(26, nameBytes.length, true);
+      ldv.setUint16(28, 0, true);
+      localHeader.set(nameBytes, 30);
+      localParts.push(localHeader, data);
+
+      var centralHeader = new Uint8Array(46 + nameBytes.length);
+      var cdv = new DataView(centralHeader.buffer);
+      cdv.setUint32(0, 0x02014b50, true);
+      cdv.setUint16(4, 20, true);
+      cdv.setUint16(6, 20, true);
+      cdv.setUint16(8, 0, true);
+      cdv.setUint16(10, 0, true);
+      cdv.setUint16(12, 0, true);
+      cdv.setUint16(14, 0x21, true);
+      cdv.setUint32(16, crc, true);
+      cdv.setUint32(20, size, true);
+      cdv.setUint32(24, size, true);
+      cdv.setUint16(28, nameBytes.length, true);
+      cdv.setUint16(30, 0, true);
+      cdv.setUint16(32, 0, true);
+      cdv.setUint16(34, 0, true);
+      cdv.setUint16(36, 0, true);
+      cdv.setUint32(38, 0, true);
+      cdv.setUint32(42, offset, true);
+      centralHeader.set(nameBytes, 46);
+      centralParts.push(centralHeader);
+
+      offset += localHeader.length + data.length;
+    });
+
+    var centralDirOffset = offset;
+    var centralDirSize = centralParts.reduce(function (sum, p) { return sum + p.length; }, 0);
+
+    var eocd = new Uint8Array(22);
+    var edv = new DataView(eocd.buffer);
+    edv.setUint32(0, 0x06054b50, true);
+    edv.setUint16(4, 0, true);
+    edv.setUint16(6, 0, true);
+    edv.setUint16(8, files.length, true);
+    edv.setUint16(10, files.length, true);
+    edv.setUint32(12, centralDirSize, true);
+    edv.setUint32(16, centralDirOffset, true);
+    edv.setUint16(20, 0, true);
+
+    var allParts = localParts.concat(centralParts, [eocd]);
+    var totalLength = allParts.reduce(function (sum, p) { return sum + p.length; }, 0);
+    var result = new Uint8Array(totalLength);
+    var pos = 0;
+    allParts.forEach(function (part) {
+      result.set(part, pos);
+      pos += part.length;
+    });
+    return result;
+  }
+
+  // Wandelt einen 0-basierten Spaltenindex in einen Excel-Spaltenbuchstaben
+  // um (0 -> A, 25 -> Z, 26 -> AA, ...).
+  function excelColumnLetter(index) {
+    var n = index + 1;
+    var letters = "";
+    while (n > 0) {
+      var rem = (n - 1) % 26;
+      letters = String.fromCharCode(65 + rem) + letters;
+      n = Math.floor((n - 1) / 26);
+    }
+    return letters;
+  }
+
+  // Baut das Worksheet-XML (xl/worksheets/sheet1.xml). Alle Zellen als
+  // "inlineStr" (Text), damit Zahlen/IDs mit führenden Nullen, Zeitangaben
+  // etc. exakt wie im XML erhalten bleiben und nicht von Excel automatisch
+  // umformatiert werden.
+  function buildSheetXml(columns, rows) {
+    function textCell(colIndex, rowNum, text) {
+      return "<c r=\"" + excelColumnLetter(colIndex) + rowNum + "\" t=\"inlineStr\"><is><t xml:space=\"preserve\">" +
+        escapeXml(text) + "</t></is></c>";
+    }
+
+    var rowsXml = "<row r=\"1\">" + columns.map(function (col, i) {
+      return textCell(i, 1, col);
+    }).join("") + "</row>";
+
+    rows.forEach(function (row, r) {
+      var rowNum = r + 2;
+      rowsXml += "<row r=\"" + rowNum + "\">" + columns.map(function (col, i) {
+        return textCell(i, rowNum, row.fields[col] != null ? row.fields[col] : "");
+      }).join("") + "</row>";
+    });
+
+    return (
+      "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n" +
+      "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">" +
+      "<sheetData>" + rowsXml + "</sheetData></worksheet>"
+    );
+  }
+
+  // Baut die vollständige .xlsx-Datei (als Uint8Array) aus den Zeilen der
+  // Abrechnungsliste. Minimal notwendige OOXML-Teile: Content-Types,
+  // Paket-Beziehungen, Workbook, Workbook-Beziehungen, ein Worksheet.
+  function buildAbrechnungslisteXlsx(rows) {
+    // Spaltenreihenfolge: Reihenfolge des ersten Auftretens über alle
+    // Zeilen hinweg, damit die Spalten stabil und nachvollziehbar sind.
+    var columns = [];
+    var seenColumns = {};
+    rows.forEach(function (row) {
+      Object.keys(row.fields).forEach(function (key) {
+        if (!seenColumns[key]) {
+          seenColumns[key] = true;
+          columns.push(key);
+        }
+      });
+    });
+
+    var contentTypesXml =
+      "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n" +
+      "<Types xmlns=\"http://schemas.openxmlformats.org/package/2006/content-types\">" +
+      "<Default Extension=\"rels\" ContentType=\"application/vnd.openxmlformats-package.relationships+xml\"/>" +
+      "<Default Extension=\"xml\" ContentType=\"application/xml\"/>" +
+      "<Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml\"/>" +
+      "<Override PartName=\"/xl/worksheets/sheet1.xml\" ContentType=\"application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml\"/>" +
+      "</Types>";
+
+    var rootRelsXml =
+      "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n" +
+      "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">" +
+      "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"xl/workbook.xml\"/>" +
+      "</Relationships>";
+
+    var workbookXml =
+      "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n" +
+      "<workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\" " +
+      "xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">" +
+      "<sheets><sheet name=\"Abrechnungsliste\" sheetId=\"1\" r:id=\"rId1\"/></sheets>" +
+      "</workbook>";
+
+    var workbookRelsXml =
+      "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\n" +
+      "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">" +
+      "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\" Target=\"worksheets/sheet1.xml\"/>" +
+      "</Relationships>";
+
+    var sheetXml = buildSheetXml(columns, rows);
+
+    var encoder = new TextEncoder();
+    var files = [
+      { name: "[Content_Types].xml", data: encoder.encode(contentTypesXml) },
+      { name: "_rels/.rels", data: encoder.encode(rootRelsXml) },
+      { name: "xl/workbook.xml", data: encoder.encode(workbookXml) },
+      { name: "xl/_rels/workbook.xml.rels", data: encoder.encode(workbookRelsXml) },
+      { name: "xl/worksheets/sheet1.xml", data: encoder.encode(sheetXml) }
+    ];
+
+    return buildZip(files);
+  }
+
+  function buildAbrechnungslisteFileName() {
+    var base = state.outputFileName || (state.fileName || "abrechnungen");
+    base = base.replace(/\.xml$/i, "");
+    return base + "_abrechnungsliste.xlsx";
+  }
+
+  function downloadAbrechnungsliste() {
+    try {
+      var zipBytes = buildAbrechnungslisteXlsx(state.invoiceRows);
+      var blob = new Blob([zipBytes], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement("a");
+      a.href = url;
+      a.download = buildAbrechnungslisteFileName();
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+    } catch (err) {
+      showStatus("Die Abrechnungsliste konnte nicht erzeugt werden: " + err.message, "error");
+    }
+  }
+
+  /* ---------------------------------------------------------------------
+   * Event-Verknüpfung UI
+   * ------------------------------------------------------------------- */
+  selectFileBtn.addEventListener("click", function () { fileInput.click(); });
+  dropzone.addEventListener("click", function (e) {
+    if (e.target === selectFileBtn) return;
+    fileInput.click();
+  });
+  dropzone.addEventListener("keydown", function (e) {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fileInput.click(); }
+  });
+
+  fileInput.addEventListener("change", function () {
+    handleFile(fileInput.files && fileInput.files[0]);
+  });
+
+  ["dragenter", "dragover"].forEach(function (evt) {
+    dropzone.addEventListener(evt, function (e) {
+      e.preventDefault();
+      dropzone.classList.add("dragover");
+    });
+  });
+  ["dragleave", "drop"].forEach(function (evt) {
+    dropzone.addEventListener(evt, function (e) {
+      e.preventDefault();
+      dropzone.classList.remove("dragover");
+    });
+  });
+  dropzone.addEventListener("drop", function (e) {
+    var file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    handleFile(file);
+  });
+
+  enrichBtn.addEventListener("click", function () {
+    showStatus("Abrechnungen werden verarbeitet…", "info");
+    downloadBtn.disabled = true;
+    listBtn.disabled = true;
+    resultOverview.hidden = true;
+    // Kurzes Timeout, damit die Statusmeldung sichtbar wird, bevor die
+    // (synchrone) Verarbeitung startet.
+    setTimeout(function () {
+      var result = processXmlString(state.xmlText);
+      renderResult(result);
+    }, 0);
+  });
+
+  downloadBtn.addEventListener("click", downloadResult);
+  listBtn.addEventListener("click", downloadAbrechnungsliste);
+
+  /* ======================================================================
+   * SELBSTTESTS
+   * ----------------------------------------------------------------------
+   * Ausführbar über den Button "Selbsttests ausführen" oder über die
+   * Entwicklerkonsole mittels runMocoSelfTests(). Die Tests nutzen exakt
+   * dieselben Funktionen wie die eigentliche Anwendung.
+   * ====================================================================== */
+  function check(results, name, actual, expected) {
+    var passed = JSON.stringify(actual) === JSON.stringify(expected);
+    results.push({
+      name: name,
+      expected: JSON.stringify(expected),
+      actual: JSON.stringify(actual),
+      passed: passed
+    });
+  }
+
+  // Baut ein einzelnes, realistisches Document-Element (eine "Abrechnung").
+  // fieldsXml erlaubt es, Division/PaymentOrderProcedure gezielt vorzugeben
+  // (bereits vorhanden mit bestimmtem Wert) oder ganz auszulassen ("" bzw.
+  // gar nicht übergeben -> Division fehlt komplett, PaymentOrderProcedure
+  // hat per Default bereits den in echten MOCO-Exporten üblichen Wert "0").
+  function makeDocumentXml(fieldsXml, opts) {
+    fieldsXml = fieldsXml || {};
+    opts = opts || {};
+    var p = opts.prefix ? opts.prefix + ":" : "";
+    var number = opts.number || "0";
+    var customerNumber = opts.customerNumber != null ? opts.customerNumber : "210102";
+    var amount = opts.amount != null ? opts.amount : "100.0";
+    var text = opts.text || "Testrechnung";
+    var divisionXml = fieldsXml.divisionXml != null ? fieldsXml.divisionXml : "";
+    var paymentOrderProcedureXml = fieldsXml.paymentOrderProcedureXml != null
+      ? fieldsXml.paymentOrderProcedureXml
+      : ("<" + p + "PaymentOrderProcedure>0</" + p + "PaymentOrderProcedure>");
+    return (
+      "<" + p + "Document mode=\"SAVE\">" +
+      "<" + p + "DocumentCode>R</" + p + "DocumentCode>" +
+      "<" + p + "CustomerNumber>" + customerNumber + "</" + p + "CustomerNumber>" +
+      divisionXml +
+      "<" + p + "Number>" + number + "</" + p + "Number>" +
+      "<" + p + "Text>" + text + "</" + p + "Text>" +
+      "<" + p + "Amount>" + amount + "</" + p + "Amount>" +
+      paymentOrderProcedureXml +
+      "</" + p + "Document>"
+    );
+  }
+
+  // Verpackt eine Liste bereits fertiger Document-XML-Strings in
+  // Task/Transaction/Root, analog zur echten MOCO-Exportstruktur.
+  function wrapDocuments(documentXmlList, opts) {
+    opts = opts || {};
+    var rootTag = opts.rootTag || CONFIG.rootElementName;
+    var xmlnsAttr = opts.xmlnsAttr || "";
+    var prefix = opts.prefix || "";
+    var p = prefix ? prefix + ":" : "";
+    var transactionsXml = documentXmlList.map(function (docXml, i) {
+      return "<" + p + "Transaction id=\"" + (i + 1) + "\">" + docXml + "</" + p + "Transaction>";
+    }).join("");
+    return (
+      "<?xml version=\"1.0\" encoding=\"UTF-8\"?>" +
+      "<" + p + rootTag + xmlnsAttr + ">" +
+      "<" + p + "TaskCount>1</" + p + "TaskCount>" +
+      "<" + p + "Task>" +
+      "<" + p + "Parameter><" + p + "Application>DEBI</" + p + "Application><" + p + "Id>Belege</" + p + "Id></" + p + "Parameter>" +
+      transactionsXml +
+      "</" + p + "Task>" +
+      "</" + p + rootTag + ">"
+    );
+  }
+
+  function test1(results) {
+    var xml = wrapDocuments([makeDocumentXml({}, { number: "1001" })]);
+    var r = processXmlString(xml);
+    check(results, "Test 1: eine Abrechnung, invoiceCount", r.invoiceCount, 1);
+    check(results, "Test 1: eine Abrechnung, processedCount", r.processedCount, 1);
+    check(results, "Test 1: Division hinzugefügt", r.fieldStats.Division.added, 1);
+    check(results, "Test 1: PaymentOrderProcedure korrigiert (Standardwert 0 -> 3920)", r.fieldStats.PaymentOrderProcedure.corrected, 1);
+  }
+
+  function test2(results) {
+    var xml = wrapDocuments([
+      makeDocumentXml({}, { number: "2001" }),
+      makeDocumentXml({}, { number: "2002" }),
+      makeDocumentXml({}, { number: "2003" })
+    ]);
+    var r = processXmlString(xml);
+    check(results, "Test 2: mehrere Abrechnungen, invoiceCount = 3", r.invoiceCount, 3);
+    check(results, "Test 2: mehrere Abrechnungen, processedCount = 3", r.processedCount, 3);
+    var allHandled = r.invoiceResults.every(function (ir) {
+      return ir.ok && ir.actions.Division === "added" && ir.actions.PaymentOrderProcedure === "corrected";
+    });
+    check(results, "Test 2: wirklich JEDE Abrechnung wurde bearbeitet (nicht nur die erste)", allHandled, true);
+  }
+
+  function test3(results) {
+    var specs = [1, 2, 3, 4].map(function (n) {
+      return makeDocumentXml({ paymentOrderProcedureXml: "" }, { number: "30" + n });
+    });
+    var xml = wrapDocuments(specs);
+    var r = processXmlString(xml);
+    check(results, "Test 3: 4 Abrechnungen, beide Felder fehlen komplett - Division added", r.fieldStats.Division.added, 4);
+    check(results, "Test 3: 4 Abrechnungen, beide Felder fehlen komplett - PaymentOrderProcedure added", r.fieldStats.PaymentOrderProcedure.added, 4);
+    check(results, "Test 3: keine bereits korrekt vorhanden", r.fieldStats.Division.kept + r.fieldStats.PaymentOrderProcedure.kept, 0);
+  }
+
+  function test4(results) {
+    var specs = [1, 2, 3].map(function (n) {
+      return makeDocumentXml(
+        { divisionXml: "<Division>390</Division>", paymentOrderProcedureXml: "<PaymentOrderProcedure>3920</PaymentOrderProcedure>" },
+        { number: "40" + n }
+      );
+    });
+    var xml = wrapDocuments(specs);
+    var r = processXmlString(xml);
+    check(results, "Test 4: beide Felder bereits korrekt überall - added=0", r.fieldStats.Division.added + r.fieldStats.PaymentOrderProcedure.added, 0);
+    check(results, "Test 4: Division kept=3", r.fieldStats.Division.kept, 3);
+    check(results, "Test 4: PaymentOrderProcedure kept=3", r.fieldStats.PaymentOrderProcedure.kept, 3);
+    check(results, "Test 4: keine Korrekturen nötig", r.fieldStats.Division.corrected + r.fieldStats.PaymentOrderProcedure.corrected, 0);
+  }
+
+  function test5(results) {
+    var doc1 = makeDocumentXml({ paymentOrderProcedureXml: "" }, { number: "5001" }); // beide fehlen
+    var doc2 = makeDocumentXml(
+      { divisionXml: "<Division>390</Division>", paymentOrderProcedureXml: "<PaymentOrderProcedure>3920</PaymentOrderProcedure>" },
+      { number: "5002" }
+    ); // beide bereits korrekt
+    // Division vorhanden; PaymentOrderProcedure nicht angegeben -> Default "0" (vorhanden, aber falscher Wert)
+    var doc3 = makeDocumentXml({ divisionXml: "<Division>390</Division>" }, { number: "5003" });
+    var xml = wrapDocuments([doc1, doc2, doc3]);
+    var r = processXmlString(xml);
+    check(results, "Test 5: Division added=1 (nur bei Abrechnung 1)", r.fieldStats.Division.added, 1);
+    check(results, "Test 5: Division kept=2", r.fieldStats.Division.kept, 2);
+    check(results, "Test 5: PaymentOrderProcedure added=1 (nur bei Abrechnung 1)", r.fieldStats.PaymentOrderProcedure.added, 1);
+    check(results, "Test 5: PaymentOrderProcedure kept=1 (Abrechnung 2)", r.fieldStats.PaymentOrderProcedure.kept, 1);
+    check(results, "Test 5: PaymentOrderProcedure corrected=1 (Abrechnung 3, Default 0 -> 3920)", r.fieldStats.PaymentOrderProcedure.corrected, 1);
+  }
+
+  function test6(results) {
+    var specs = [1, 2].map(function (n) {
+      return makeDocumentXml({ divisionXml: "<Division>390</Division>", paymentOrderProcedureXml: "" }, { number: "60" + n });
+    });
+    var xml = wrapDocuments(specs);
+    var r = processXmlString(xml);
+    check(results, "Test 6: Division bereits vorhanden - kept=2", r.fieldStats.Division.kept, 2);
+    check(results, "Test 6: PaymentOrderProcedure wird ergänzt - added=2", r.fieldStats.PaymentOrderProcedure.added, 2);
+  }
+
+  function test7(results) {
+    var specs = [1, 2].map(function (n) {
+      return makeDocumentXml({ paymentOrderProcedureXml: "<PaymentOrderProcedure>3920</PaymentOrderProcedure>" }, { number: "70" + n });
+    });
+    var xml = wrapDocuments(specs);
+    var r = processXmlString(xml);
+    check(results, "Test 7: PaymentOrderProcedure bereits korrekt - kept=2", r.fieldStats.PaymentOrderProcedure.kept, 2);
+    check(results, "Test 7: Division wird ergänzt - added=2", r.fieldStats.Division.added, 2);
+  }
+
+  function test8(results) {
+    var doc1 = makeDocumentXml(
+      { divisionXml: "<Division>999</Division>", paymentOrderProcedureXml: "<PaymentOrderProcedure>3920</PaymentOrderProcedure>" },
+      { number: "8001" }
+    );
+    var xml = wrapDocuments([doc1]);
+    var r = processXmlString(xml);
+    check(results, "Test 8: abweichender Wert wird korrigiert - Division corrected=1", r.fieldStats.Division.corrected, 1);
+    check(results, "Test 8: PaymentOrderProcedure bereits korrekt - kept=1", r.fieldStats.PaymentOrderProcedure.kept, 1);
+    var doc = new DOMParser().parseFromString(r.serializedXml, "application/xml");
+    var val = doc.getElementsByTagName("Division")[0].textContent;
+    check(results, "Test 8: finaler Wert nach Korrektur = 390", val, "390");
+  }
+
+  function test9(results) {
+    // Abrechnung A: doppeltes Feld -> Struktur nicht eindeutig
+    var docDuplicate =
+      "<Document mode=\"SAVE\">" +
+      "<DocumentCode>R</DocumentCode><CustomerNumber>210102</CustomerNumber>" +
+      "<Division>390</Division><Division>390</Division>" +
+      "<Number>9001</Number><Text>Testrechnung</Text>" +
+      "<Amount>100.0</Amount><PaymentOrderProcedure>0</PaymentOrderProcedure>" +
+      "</Document>";
+    // Abrechnung B: CustomerNumber fehlt -> Einfügeposition für Division nicht auffindbar
+    var docMissingAnchor =
+      "<Document mode=\"SAVE\">" +
+      "<DocumentCode>R</DocumentCode>" +
+      "<Number>9002</Number><Text>Testrechnung</Text>" +
+      "<Amount>100.0</Amount><PaymentOrderProcedure>0</PaymentOrderProcedure>" +
+      "</Document>";
+    // Abrechnung C: unauffällig, muss trotz der zwei Fehler weiterhin verarbeitet werden
+    var docOk = makeDocumentXml({}, { number: "9003" });
+    var xml = wrapDocuments([docDuplicate, docMissingAnchor, docOk]);
+    var r = processXmlString(xml);
+    check(results, "Test 9: invoiceCount=3", r.invoiceCount, 3);
+    check(results, "Test 9: zwei Abrechnungen fehlerhaft (doppeltes Feld / fehlende Einfügeposition)", r.errorCount, 2);
+    check(results, "Test 9: verbleibende Abrechnung trotzdem verarbeitet", r.processedCount, 1);
+    check(results, "Test 9: Fehler nennt Beleg Nr. 9001 (Struktur)", r.invoiceErrors[0].label, "Beleg Nr. 9001");
+    check(results, "Test 9: Fehler nennt Beleg Nr. 9002 (Einfügeposition)", r.invoiceErrors[1].label, "Beleg Nr. 9002");
+  }
+
+  function test10(results) {
+    var xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><FooContainer><Task/></FooContainer>";
+    var r = processXmlString(xml);
+    check(results, "Test 10: falsches Wurzelelement - ok=false", r.ok, false);
+    check(results, "Test 10: fatalError vorhanden", typeof r.fatalError === "string" && r.fatalError.length > 0, true);
+  }
+
+  function test11(results) {
+    var xml =
+      "<?xml version=\"1.0\" encoding=\"UTF-8\"?>" +
+      "<AbaConnectContainer><TaskCount>1</TaskCount><Task>" +
+      "<Parameter><Application>DEBI</Application><Id>Kunden</Id></Parameter>" +
+      "<Transaction id=\"1\"><Customer mode=\"SAVE\"><CustomerNumber>1</CustomerNumber></Customer></Transaction>" +
+      "</Task></AbaConnectContainer>";
+    var r = processXmlString(xml);
+    check(results, "Test 11: keine Abrechnung gefunden - ok=false", r.ok, false);
+    check(results, "Test 11: invoiceCount=0", r.invoiceCount, 0);
+  }
+
+  function test12(results) {
+    var xml = "<AbaConnectContainer><Task><Transaction id=\"1\"><Document mode=\"SAVE\"</Document></Transaction></Task>";
+    var r = processXmlString(xml);
+    check(results, "Test 12: ungültiges XML - ok=false", r.ok, false);
+  }
+
+  function test13(results) {
+    var ns = "urn:test:aba";
+    var xml = wrapDocuments([makeDocumentXml({}, { number: "13001" })], { xmlnsAttr: " xmlns=\"" + ns + "\"" });
+    var r = processXmlString(xml);
+    check(results, "Test 13: XML mit Namespace - processedCount=1", r.processedCount, 1);
+    var doc = new DOMParser().parseFromString(r.serializedXml, "application/xml");
+    var el = doc.getElementsByTagNameNS(ns, "Division")[0];
+    check(results, "Test 13: neues Element besitzt korrekten Namespace", !!el, true);
+  }
+
+  function test14(results) {
+    var ns = "urn:test:aba";
+    var xml = wrapDocuments(
+      [makeDocumentXml({}, { number: "14001", prefix: "xyz" })],
+      { xmlnsAttr: " xmlns:xyz=\"" + ns + "\"", prefix: "xyz" }
+    );
+    var r = processXmlString(xml);
+    check(results, "Test 14: abweichendes Namespace-Präfix - processedCount=1", r.processedCount, 1);
+    var doc = new DOMParser().parseFromString(r.serializedXml, "application/xml");
+    var el = doc.getElementsByTagNameNS(ns, "Division")[0];
+    check(results, "Test 14: Element per Namespace gefunden, unabhängig vom Präfix", !!el, true);
+  }
+
+  function test15(results) {
+    var specialText = "Rechnung – Jährliche Wartung «Straße/Zürich» ÄÖÜäöüß€";
+    var xml = wrapDocuments([makeDocumentXml({}, { number: "15001", text: specialText })]);
+    var r = processXmlString(xml);
+    check(results, "Test 15: Sonderzeichen/Umlaute - processedCount=1", r.processedCount, 1);
+    check(results, "Test 15: Sonderzeichen bleiben im Ergebnis erhalten", r.serializedXml.indexOf(specialText) !== -1, true);
+  }
+
+  function test16(results) {
+    var specs = [];
+    for (var i = 1; i <= 12; i++) {
+      specs.push(makeDocumentXml({}, { number: "16" + String(i).padStart(3, "0") }));
+    }
+    var xml = wrapDocuments(specs);
+    var r = processXmlString(xml);
+    check(results, "Test 16: 12 Abrechnungen erkannt", r.invoiceCount, 12);
+    check(results, "Test 16: alle 12 verarbeitet", r.processedCount, 12);
+    check(results, "Test 16: Division bei allen 12 ergänzt", r.fieldStats.Division.added, 12);
+    check(results, "Test 16: PaymentOrderProcedure bei allen 12 korrigiert", r.fieldStats.PaymentOrderProcedure.corrected, 12);
+
+    var doc = new DOMParser().parseFromString(r.serializedXml, "application/xml");
+    var allDocuments = Array.prototype.slice.call(doc.getElementsByTagName("Document"));
+    var everyDocOk = allDocuments.every(function (d) {
+      var customerNumberEl = null, divisionEl = null;
+      var children = Array.prototype.slice.call(d.children);
+      for (var idx = 0; idx < children.length; idx++) {
+        if (children[idx].localName === "CustomerNumber") customerNumberEl = children[idx];
+        if (children[idx].localName === "Division") divisionEl = children[idx];
+      }
+      return !!customerNumberEl && !!divisionEl && divisionEl.previousElementSibling === customerNumberEl;
+    });
+    check(results, "Test 16: in JEDER der 12 Abrechnungen steht Division direkt nach CustomerNumber", everyDocOk, true);
+    check(results, "Test 16: Anzahl Document-Elemente in Ausgabedatei = 12", allDocuments.length, 12);
+  }
+
+  // --- Fixtures für Dossier-Einträge (Task -> Transaction -> DocumentDossier -> Dossier) ---
+
+  // Baut eine komplette <Task>...</Task>-Hülle aus bereits fertigen, komplett
+  // eigenständigen <Transaction>-Blöcken (inkl. Wrapper).
+  function makeTaskXml(id, transactionsXml, opts) {
+    opts = opts || {};
+    var p = opts.prefix ? opts.prefix + ":" : "";
+    return (
+      "<" + p + "Task>" +
+      "<" + p + "Parameter><" + p + "Application>DEBI</" + p + "Application><" + p + "Id>" + id + "</" + p + "Id></" + p + "Parameter>" +
+      transactionsXml.join("") +
+      "</" + p + "Task>"
+    );
+  }
+
+  // Baut den "Belege"-Task inkl. der nötigen <Transaction>-Wrapper direkt aus
+  // rohen Document-XML-Strings (wie von makeDocumentXml zurückgegeben).
+  function makeBelegeTaskXml(documentXmlList, opts) {
+    opts = opts || {};
+    var p = opts.prefix ? opts.prefix + ":" : "";
+    var transactionsXml = documentXmlList.map(function (docXml, i) {
+      return "<" + p + "Transaction id=\"" + (i + 1) + "\">" + docXml + "</" + p + "Transaction>";
+    });
+    return makeTaskXml("Belege", transactionsXml, opts);
+  }
+
+  // Verpackt beliebig viele bereits fertige <Task>-Blöcke in die Wurzel.
+  function wrapTasks(taskXmlList, opts) {
+    opts = opts || {};
+    var rootTag = opts.rootTag || CONFIG.rootElementName;
+    var xmlnsAttr = opts.xmlnsAttr || "";
+    var prefix = opts.prefix || "";
+    var p = prefix ? prefix + ":" : "";
+    return (
+      "<?xml version=\"1.0\" encoding=\"UTF-8\"?>" +
+      "<" + p + rootTag + xmlnsAttr + ">" +
+      "<" + p + "TaskCount>" + taskXmlList.length + "</" + p + "TaskCount>" +
+      taskXmlList.join("") +
+      "</" + p + rootTag + ">"
+    );
+  }
+
+  // Baut eine <Transaction><DocumentDossier><Number>.../<Dossier>...</Dossier></DocumentDossier></Transaction>.
+  // innerFieldXml steuert gezielt, ob/als was DocumentName bzw. Number im Dossier vorliegt.
+  function makeDossierTransactionXml(opts) {
+    opts = opts || {};
+    var p = opts.prefix ? opts.prefix + ":" : "";
+    var txId = opts.txId || "1";
+    var belegNumber = opts.belegNumber || "999999";
+    var innerFieldXml = opts.innerFieldXml != null
+      ? opts.innerFieldXml
+      : ("<" + p + "DocumentName>ABC123</" + p + "DocumentName>");
+    return (
+      "<" + p + "Transaction id=\"" + txId + "\">" +
+      "<" + p + "DocumentDossier mode=\"SAVE\">" +
+      "<" + p + "Number>" + belegNumber + "</" + p + "Number>" +
+      "<" + p + "Dossier mode=\"SAVE\">" +
+      "<" + p + "DossierName>Standard</" + p + "DossierName>" +
+      innerFieldXml +
+      "<" + p + "Filename>test.pdf</" + p + "Filename>" +
+      "<" + p + "OriginalFilename>test.pdf</" + p + "OriginalFilename>" +
+      "</" + p + "Dossier>" +
+      "</" + p + "DocumentDossier>" +
+      "</" + p + "Transaction>"
+    );
+  }
+
+  function test17(results) {
+    var belegeTask = makeBelegeTaskXml([makeDocumentXml({}, { number: "17001" })]);
+    var dossierTx = makeDossierTransactionXml({ belegNumber: "17001", innerFieldXml: "<DocumentName>TR900001</DocumentName>" });
+    var dossierTask = makeTaskXml("BelegDossier", [dossierTx]);
+    var xml = wrapTasks([belegeTask, dossierTask]);
+    var r = processXmlString(xml);
+    check(results, "Test 17: ein Dossier-Eintrag gefunden", r.dossierCount, 1);
+    check(results, "Test 17: DocumentName wird zu Number umbenannt", r.dossierRenamedCount, 1);
+
+    var doc = new DOMParser().parseFromString(r.serializedXml, "application/xml");
+    var dossierEl = doc.getElementsByTagName("Dossier")[0];
+    var numberInDossier = getDirectChildrenByLocalName(dossierEl, "Number")[0];
+    check(results, "Test 17: umbenanntes Element behält seinen Wert", numberInDossier ? numberInDossier.textContent : null, "TR900001");
+    check(results, "Test 17: kein DocumentName mehr vorhanden", doc.getElementsByTagName("DocumentName").length, 0);
+
+    var docDossierEl = doc.getElementsByTagName("DocumentDossier")[0];
+    var outerNumber = getDirectChildrenByLocalName(docDossierEl, "Number")[0];
+    check(results, "Test 17: äusseres Belegnummer-Element von DocumentDossier bleibt unverändert erhalten", outerNumber ? outerNumber.textContent : null, "17001");
+  }
+
+  function test18(results) {
+    var belegeTask = makeBelegeTaskXml([makeDocumentXml({}, { number: "18001" })]);
+    var dossierTxs = [1, 2, 3].map(function (n) {
+      return makeDossierTransactionXml({ txId: String(n), belegNumber: "1800" + n, innerFieldXml: "<DocumentName>DOC" + n + "</DocumentName>" });
+    });
+    var dossierTask = makeTaskXml("BelegDossier", dossierTxs);
+    var xml = wrapTasks([belegeTask, dossierTask]);
+    var r = processXmlString(xml);
+    check(results, "Test 18: 3 Dossier-Einträge gefunden", r.dossierCount, 3);
+    check(results, "Test 18: alle 3 umbenannt (nicht nur der erste)", r.dossierRenamedCount, 3);
+    check(results, "Test 18: keine Fehler", r.dossierErrorCount, 0);
+
+    var doc = new DOMParser().parseFromString(r.serializedXml, "application/xml");
+    var dossierEls = Array.prototype.slice.call(doc.getElementsByTagName("Dossier"));
+    var allRenamed = dossierEls.every(function (d) {
+      return getDirectChildrenByLocalName(d, "DocumentName").length === 0 &&
+             getDirectChildrenByLocalName(d, "Number").length === 1;
+    });
+    check(results, "Test 18: in JEDEM Dossier-Element wurde DocumentName tatsächlich ersetzt", allRenamed, true);
+  }
+
+  function test19(results) {
+    var belegeTask = makeBelegeTaskXml([makeDocumentXml({}, { number: "19001" })]);
+    var dossierTx = makeDossierTransactionXml({ belegNumber: "19001", innerFieldXml: "<Number>ALREADY123</Number>" });
+    var dossierTask = makeTaskXml("BelegDossier", [dossierTx]);
+    var xml = wrapTasks([belegeTask, dossierTask]);
+    var r = processXmlString(xml);
+    check(results, "Test 19: bereits umbenannt - kein erneutes Umbenennen (renamedCount=0)", r.dossierRenamedCount, 0);
+    check(results, "Test 19: bereits umbenannt - trotzdem als verarbeitet gezählt", r.dossierProcessedCount, 1);
+
+    var doc = new DOMParser().parseFromString(r.serializedXml, "application/xml");
+    var dossierEl = doc.getElementsByTagName("Dossier")[0];
+    check(results, "Test 19: Wert bleibt unverändert erhalten", getDirectChildrenByLocalName(dossierEl, "Number")[0].textContent, "ALREADY123");
+  }
+
+  function test20(results) {
+    var belegeTask = makeBelegeTaskXml([makeDocumentXml({}, { number: "20001" })]);
+    var dossierMissing = makeDossierTransactionXml({ txId: "1", belegNumber: "20101", innerFieldXml: "" });
+    var dossierDuplicate = makeDossierTransactionXml({ txId: "2", belegNumber: "20102", innerFieldXml: "<DocumentName>A</DocumentName><DocumentName>B</DocumentName>" });
+    var dossierOk = makeDossierTransactionXml({ txId: "3", belegNumber: "20103", innerFieldXml: "<DocumentName>OK</DocumentName>" });
+    var dossierTask = makeTaskXml("BelegDossier", [dossierMissing, dossierDuplicate, dossierOk]);
+    var xml = wrapTasks([belegeTask, dossierTask]);
+    var r = processXmlString(xml);
+    check(results, "Test 20: 3 Dossier-Einträge gefunden", r.dossierCount, 3);
+    check(results, "Test 20: 2 Einträge fehlerhaft (weder Feld gefunden / doppeltes Feld)", r.dossierErrorCount, 2);
+    check(results, "Test 20: verbleibender Eintrag trotzdem verarbeitet", r.dossierProcessedCount, 1);
+  }
+
+  function test21(results) {
+    var belegeTask = makeBelegeTaskXml([makeDocumentXml({}, { number: "21001" })]);
+    var xml = wrapTasks([belegeTask]);
+    var r = processXmlString(xml);
+    check(results, "Test 21: kein BelegDossier-Task vorhanden - kein fataler Fehler", r.ok, true);
+    check(results, "Test 21: dossierCount=0", r.dossierCount, 0);
+    check(results, "Test 21: Abrechnung wird trotzdem normal verarbeitet", r.processedCount, 1);
+  }
+
+  function runMocoSelfTests() {
+    var results = [];
+    var tests = [
+      test1, test2, test3, test4, test5, test6, test7, test8, test9, test10,
+      test11, test12, test13, test14, test15, test16, test17, test18, test19, test20, test21
+    ];
+    tests.forEach(function (fn) {
+      try {
+        fn(results);
+      } catch (err) {
+        results.push({
+          name: fn.name + " (unerwarteter Fehler)",
+          expected: "kein Fehler",
+          actual: err.message,
+          passed: false
+        });
+      }
+    });
+    return results;
+  }
+
+  function renderTestResults(results) {
+    var passedCount = results.filter(function (r) { return r.passed; }).length;
+    var html = "<table class=\"test-table\"><thead><tr><th>Test</th><th>Erwartet</th><th>Tatsächlich</th><th>Status</th></tr></thead><tbody>";
+    results.forEach(function (r) {
+      html += "<tr><td>" + escapeHtml(r.name) + "</td><td>" + escapeHtml(r.expected) + "</td><td>" +
+        escapeHtml(r.actual) + "</td><td class=\"" + (r.passed ? "pass" : "fail") + "\">" +
+        (r.passed ? "bestanden" : "fehlgeschlagen") + "</td></tr>";
+    });
+    html += "</tbody></table>";
+    html += "<p class=\"test-summary\">" + passedCount + " von " + results.length + " Tests bestanden.</p>";
+    document.getElementById("testResults").innerHTML = html;
+  }
+
+  document.getElementById("runTestsBtn").addEventListener("click", function () {
+    renderTestResults(runMocoSelfTests());
+  });
+
+  // Für die Ausführung über die Entwicklerkonsole:
+  window.runMocoSelfTests = runMocoSelfTests;
+})();
+</script>
+</body>
+</html>
