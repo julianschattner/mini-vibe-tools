@@ -200,7 +200,7 @@
   <details class="panel selftest-section">
     <summary>Selbsttests</summary>
     <p class="hint" style="color: var(--color-muted); font-size: 0.85rem;">
-      Prüft die Verarbeitungslogik anhand von 21 Testfällen mit synthetischen XML-Beispielen
+      Prüft die Verarbeitungslogik anhand von 26 Testfällen mit synthetischen XML-Beispielen
       (keine Auswirkung auf eine ggf. geladene Datei). Kann auch über die Entwicklerkonsole mit
       <code>runMocoSelfTests()</code> ausgeführt werden.
     </p>
@@ -560,6 +560,59 @@
   }
 
   /* ======================================================================
+   * BELEGNUMMER AUS DOSSIER IN DIE ABRECHNUNG ÜBERNEHMEN
+   * ----------------------------------------------------------------------
+   * Die MOCO-eigene Belegnummer (z. B. aus dem PDF-Dateinamen abgeleitet)
+   * steht im Dossier-Eintrag im Feld DocumentName (nach der Umbenennung
+   * oben: CONFIG.rename.to, also "Number"). Sie soll das Number-Feld der
+   * zugehörigen Abrechnung (Task -> Transaction -> Document -> Number)
+   * ersetzen. Die Verknüpfung erfolgt über die ABACUS-Beleg-Nummer: den
+   * ursprünglichen Wert von Document.Number, der dem äusseren
+   * DocumentDossier.Number entspricht. Ein fehlender Dossier-Eintrag ist
+   * KEIN Fehler (Dossier-Einträge sind grundsätzlich optional) - nur wenn
+   * mehrere Dossier-Einträge dieselbe Beleg-Nummer beanspruchen, ist die
+   * Zuordnung nicht mehr eindeutig und die betroffene Abrechnung wird mit
+   * Fehler markiert.
+   * ====================================================================== */
+  function buildDossierDocumentNumberLookup(dossierEntries) {
+    var lookup = {};
+    var ambiguous = {};
+    dossierEntries.forEach(function (entry) {
+      var belegNumber = getDirectChildTextByLocalName(entry.containerEl, "Number");
+      if (!belegNumber) return;
+      var documentNumber = getDirectChildTextByLocalName(entry.dossierEl, CONFIG.rename.to);
+      if (documentNumber == null) return;
+      if (Object.prototype.hasOwnProperty.call(lookup, belegNumber)) {
+        ambiguous[belegNumber] = true;
+        return;
+      }
+      lookup[belegNumber] = documentNumber;
+    });
+    return { lookup: lookup, ambiguous: ambiguous };
+  }
+
+  // Übernimmt für eine einzelne Abrechnung die Belegnummer aus dem Dossier,
+  // sofern ein eindeutiger Dossier-Eintrag mit derselben Beleg-Nummer
+  // existiert. Rückgabe: "updated", "kept" (Wert stimmte bereits überein)
+  // oder "skipped" (kein passender Dossier-Eintrag - kein Fehler).
+  function applyDossierDocumentNumber(documentEl, originalNumber, dossierLookup) {
+    if (!originalNumber) return "skipped";
+    if (dossierLookup.ambiguous[originalNumber]) {
+      throw new Error(
+        "Für die Beleg-Nummer '" + originalNumber + "' wurden mehrere Dossier-Einträge gefunden - " +
+        "die Zuordnung zur Abrechnung ist nicht eindeutig."
+      );
+    }
+    var documentNumber = dossierLookup.lookup[originalNumber];
+    if (documentNumber == null) return "skipped";
+
+    var numberEl = getDirectChildrenByLocalName(documentEl, "Number")[0];
+    if (numberEl.textContent.trim() === documentNumber) return "kept";
+    numberEl.textContent = documentNumber;
+    return "updated";
+  }
+
+  /* ======================================================================
    * ZUSATZDATEN FÜR DIE ABRECHNUNGSLISTE (Kunden-Stammdaten, Dossier/Datei-
    * Informationen)
    * ----------------------------------------------------------------------
@@ -647,6 +700,7 @@
       dossierRenamedCount: 0,
       dossierAlreadyRenamedCount: 0,
       dossierErrors: [],
+      documentNumberStats: { updated: 0, kept: 0, skipped: 0 },
       serializedXml: null
     };
 
@@ -683,7 +737,13 @@
         Object.keys(actions).forEach(function (fieldName) {
           result.fieldStats[fieldName][actions[fieldName]]++;
         });
-        invoiceOutcomes.push({ label: label, ok: true, actions: actions, documentEl: invoice.documentEl });
+        invoiceOutcomes.push({
+          label: label,
+          ok: true,
+          actions: actions,
+          documentEl: invoice.documentEl,
+          originalNumber: getDirectChildTextByLocalName(invoice.documentEl, "Number")
+        });
         result.processedCount++;
       } catch (err) {
         invoiceOutcomes.push({ label: label, ok: false, message: err.message });
@@ -695,6 +755,7 @@
     // Dossier-Einträge sind optional: 0 Treffer ist kein Fehler.
     var dossierEntries = findDossierEntries(root);
     result.dossierCount = dossierEntries.length;
+    var successfulDossierEntries = [];
     dossierEntries.forEach(function (entry, index) {
       var label = getDossierEntryLabel(entry.containerEl, entry.transactionEl, index);
       try {
@@ -702,9 +763,28 @@
         if (action === "renamed") result.dossierRenamedCount++;
         if (action === "kept") result.dossierAlreadyRenamedCount++;
         result.dossierProcessedCount++;
+        successfulDossierEntries.push(entry);
       } catch (err) {
         result.dossierErrors.push({ label: label, message: err.message });
         result.dossierErrorCount++;
+      }
+    });
+
+    // Belegnummer aus dem (bereits umbenannten) Dossier-Eintrag in die
+    // zugehörige Abrechnung übernehmen - siehe applyDossierDocumentNumber.
+    // Nur erfolgreich umbenannte Dossier-Einträge werden dafür herangezogen.
+    var dossierDocumentNumberLookup = buildDossierDocumentNumberLookup(successfulDossierEntries);
+    invoiceOutcomes.forEach(function (outcome) {
+      if (!outcome.ok) return;
+      try {
+        var numberAction = applyDossierDocumentNumber(outcome.documentEl, outcome.originalNumber, dossierDocumentNumberLookup);
+        result.documentNumberStats[numberAction]++;
+      } catch (err) {
+        outcome.ok = false;
+        outcome.message = err.message;
+        result.invoiceErrors.push({ label: outcome.label, message: err.message });
+        result.errorCount++;
+        result.processedCount--;
       }
     });
 
@@ -721,7 +801,7 @@
       }
       var fields = flattenElementToRow(outcome.documentEl);
       mergeInto(fields, customersByNumber[fields.CustomerNumber]);
-      mergeInto(fields, dossierByBelegNumber[fields.Number]);
+      mergeInto(fields, dossierByBelegNumber[outcome.originalNumber]);
       result.invoiceResults.push({ label: outcome.label, ok: true, actions: outcome.actions, fields: fields });
     });
 
@@ -910,6 +990,12 @@
         });
         html += "</ul>";
       }
+
+      html += "<h3>Belegnummer aus Dossier in Abrechnung übernehmen</h3><ul>";
+      html += "<li>Document-Number aktualisiert: " + result.documentNumberStats.updated + "</li>";
+      html += "<li>Bereits korrekt vorhanden: " + result.documentNumberStats.kept + "</li>";
+      html += "<li>Kein passender Dossier-Eintrag gefunden: " + result.documentNumberStats.skipped + "</li>";
+      html += "</ul>";
     }
 
     resultOverview.innerHTML = html;
@@ -1660,11 +1746,86 @@
     check(results, "Test 21: Abrechnung wird trotzdem normal verarbeitet", r.processedCount, 1);
   }
 
+  // --- Tests für die Übernahme der Belegnummer aus dem Dossier-Eintrag
+  // (Dossier -> DocumentName) in das Number-Feld der zugehörigen Abrechnung
+  // (Document -> Number), verknüpft über die ABACUS-Beleg-Nummer. ---
+
+  function test22(results) {
+    var belegeTask = makeBelegeTaskXml([makeDocumentXml({}, { number: "22001" })]);
+    var dossierTx = makeDossierTransactionXml({ belegNumber: "22001", innerFieldXml: "<DocumentName>5902522</DocumentName>" });
+    var dossierTask = makeTaskXml("BelegDossier", [dossierTx]);
+    var xml = wrapTasks([belegeTask, dossierTask]);
+    var r = processXmlString(xml);
+    check(results, "Test 22: Belegnummer aus Dossier übernommen (updated=1)", r.documentNumberStats.updated, 1);
+
+    var doc = new DOMParser().parseFromString(r.serializedXml, "application/xml");
+    var numberEl = getDirectChildrenByLocalName(doc.getElementsByTagName("Document")[0], "Number")[0];
+    check(results, "Test 22: Document->Number enthält jetzt die Dossier-Nummer", numberEl.textContent, "5902522");
+  }
+
+  function test23(results) {
+    var docs = [1, 2, 3].map(function (n) { return makeDocumentXml({}, { number: "230" + n }); });
+    var belegeTask = makeBelegeTaskXml(docs);
+    var dossierTxs = [1, 2, 3].map(function (n) {
+      return makeDossierTransactionXml({ txId: String(n), belegNumber: "230" + n, innerFieldXml: "<DocumentName>DOC23" + n + "</DocumentName>" });
+    });
+    var dossierTask = makeTaskXml("BelegDossier", dossierTxs);
+    var xml = wrapTasks([belegeTask, dossierTask]);
+    var r = processXmlString(xml);
+    check(results, "Test 23: alle 3 Belegnummern übernommen (updated=3, nicht nur die erste)", r.documentNumberStats.updated, 3);
+
+    var doc = new DOMParser().parseFromString(r.serializedXml, "application/xml");
+    var allDocuments = Array.prototype.slice.call(doc.getElementsByTagName("Document"));
+    var allUpdated = allDocuments.every(function (d, i) {
+      var numberEl = getDirectChildrenByLocalName(d, "Number")[0];
+      return numberEl.textContent === "DOC23" + (i + 1);
+    });
+    check(results, "Test 23: in JEDER der 3 Abrechnungen wurde die Belegnummer korrekt übernommen", allUpdated, true);
+  }
+
+  function test24(results) {
+    var belegeTask = makeBelegeTaskXml([makeDocumentXml({}, { number: "24001" })]);
+    // Dossier-Eintrag mit abweichender Beleg-Nummer - kein Treffer für diese Abrechnung.
+    var dossierTx = makeDossierTransactionXml({ belegNumber: "99999", innerFieldXml: "<DocumentName>SHOULDNOTAPPLY</DocumentName>" });
+    var dossierTask = makeTaskXml("BelegDossier", [dossierTx]);
+    var xml = wrapTasks([belegeTask, dossierTask]);
+    var r = processXmlString(xml);
+    check(results, "Test 24: keine passende Beleg-Nummer - skipped=1", r.documentNumberStats.skipped, 1);
+    check(results, "Test 24: kein Fehler durch fehlenden Treffer", r.errorCount, 0);
+
+    var doc = new DOMParser().parseFromString(r.serializedXml, "application/xml");
+    var numberEl = getDirectChildrenByLocalName(doc.getElementsByTagName("Document")[0], "Number")[0];
+    check(results, "Test 24: Document->Number bleibt unverändert", numberEl.textContent, "24001");
+  }
+
+  function test25(results) {
+    var belegeTask = makeBelegeTaskXml([makeDocumentXml({}, { number: "25001" })]);
+    var dossierTx = makeDossierTransactionXml({ belegNumber: "25001", innerFieldXml: "<DocumentName>25001</DocumentName>" });
+    var dossierTask = makeTaskXml("BelegDossier", [dossierTx]);
+    var xml = wrapTasks([belegeTask, dossierTask]);
+    var r = processXmlString(xml);
+    check(results, "Test 25: Wert stimmt bereits überein - kept=1", r.documentNumberStats.kept, 1);
+    check(results, "Test 25: kein unnötiges 'updated'", r.documentNumberStats.updated, 0);
+  }
+
+  function test26(results) {
+    var belegeTask = makeBelegeTaskXml([makeDocumentXml({}, { number: "26001" })]);
+    var dossierTx1 = makeDossierTransactionXml({ txId: "1", belegNumber: "26001", innerFieldXml: "<DocumentName>AAA</DocumentName>" });
+    var dossierTx2 = makeDossierTransactionXml({ txId: "2", belegNumber: "26001", innerFieldXml: "<DocumentName>BBB</DocumentName>" });
+    var dossierTask = makeTaskXml("BelegDossier", [dossierTx1, dossierTx2]);
+    var xml = wrapTasks([belegeTask, dossierTask]);
+    var r = processXmlString(xml);
+    check(results, "Test 26: mehrdeutige Beleg-Nummer im Dossier - Abrechnung wird als Fehler markiert", r.errorCount, 1);
+    check(results, "Test 26: dadurch keine erfolgreich verarbeitete Abrechnung mehr", r.processedCount, 0);
+    check(results, "Test 26: beide Dossier-Einträge selbst wurden dennoch erfolgreich umbenannt", r.dossierRenamedCount, 2);
+  }
+
   function runMocoSelfTests() {
     var results = [];
     var tests = [
       test1, test2, test3, test4, test5, test6, test7, test8, test9, test10,
-      test11, test12, test13, test14, test15, test16, test17, test18, test19, test20, test21
+      test11, test12, test13, test14, test15, test16, test17, test18, test19, test20, test21,
+      test22, test23, test24, test25, test26
     ];
     tests.forEach(function (fn) {
       try {
