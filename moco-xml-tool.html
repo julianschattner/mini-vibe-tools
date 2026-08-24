@@ -113,6 +113,24 @@
     margin-top: 1.25rem;
     flex-wrap: wrap;
   }
+  .field {
+    margin-top: 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    max-width: 20rem;
+  }
+  .field label {
+    font-size: 0.85rem;
+    color: var(--color-muted);
+  }
+  .field input {
+    padding: 0.5rem 0.6rem;
+    border: 1px solid var(--color-border);
+    border-radius: 6px;
+    font: inherit;
+    color: var(--color-text);
+  }
   .status {
     margin-top: 1rem;
     padding: 0.65rem 0.9rem;
@@ -186,6 +204,11 @@
     <div id="fileNameDisplay" class="filename"></div>
     <p class="privacy-note">🔒 Die Datei wird ausschließlich lokal in Ihrem Browser verarbeitet. Es findet keine Übertragung an einen Server statt.</p>
 
+    <div class="field">
+      <label for="generalLedgerDateInput">Fibu-Datum (Leistungsdatum, gilt für alle Abrechnungen dieser Datei)</label>
+      <input type="date" id="generalLedgerDateInput">
+    </div>
+
     <div class="actions">
       <button id="enrichBtn" type="button" disabled>XML anreichern</button>
       <button id="downloadBtn" type="button" disabled>Ergebnis herunterladen</button>
@@ -251,10 +274,45 @@
     dossierEntryElementName: "Dossier",
     rename: { from: "DocumentName", to: "Number" },
     // Name des Elements mit den Kunden-Stammdaten (Pfad: Task -> Transaction
-    // -> Customer). Wird nur für die Abrechnungsliste (XLS-Export) über
-    // CustomerNumber mit der jeweiligen Abrechnung verknüpft - die
-    // eigentliche XML-Anreicherung bleibt davon unberührt.
-    customerElementName: "Customer"
+    // -> Customer). Wird für die Abrechnungsliste (XLS-Export) über
+    // CustomerNumber mit der jeweiligen Abrechnung verknüpft, UND für die
+    // Intercompany-Zuordnung unten (siehe intercompanyByCustomerName).
+    customerElementName: "Customer",
+    // Interne (Konzern-)Kunden erhalten automatisch eine Intercompany-Nummer,
+    // sobald ihr Name (Pfad: Customer -> AddressData -> Name) exakt einem
+    // der folgenden Einträge entspricht. Liste bei Bedarf einfach um weitere
+    // Name/Nummer-Paare ergänzen - der restliche Code muss dafür nicht
+    // angepasst werden.
+    intercompanyByCustomerName: {
+      "Galledia Print AG": "3920",
+      "Galledia Regionalmedien AG": "3940",
+      "galledia group ag": "3910"
+    },
+    // Wie ensureField()/CONFIG.fields oben: fehlt das Feld, wird es direkt
+    // nach dem Element mit dem Namen "insertAfterLocalName" eingefügt.
+    intercompanyField: { localName: "Intercompany", insertAfterLocalName: "DefaultCurrency" },
+    // KeyAmount ist ein reines Kontroll-Duplikat von Amount (dasselbe Muster
+    // existiert in jedem LineItem bereits für TaxAmount -> KeyTaxAmount).
+    keyAmountField: { localName: "KeyAmount", insertAfterLocalName: "Amount" },
+    // Fibu-Datum (Leistungsdatum): MOCO liefert dafür kein eigenes Feld, der
+    // Wert wird daher einmal pro Verarbeitungslauf im Formular gewählt
+    // (siehe generalLedgerDateInput) und gilt für alle Abrechnungen der Datei.
+    generalLedgerDateField: { localName: "GeneralLedgerDate", insertAfterLocalName: "AccountReceivableDate" },
+    // QR-Referenzzeile: 27-stellige Zahl aus einem fixen, 5-stelligen
+    // Kreditor-Präfix (an das konkrete QR-IBAN-Konto gebunden - bei
+    // Kontowechsel hier anpassen), gefolgt von der Belegnummer (rechtsbündig
+    // mit Nullen auf die verbleibenden Stellen aufgefüllt) und einer
+    // rekursiven Modulo-10-Prüfziffer (siehe mod10RecursiveCheckDigit,
+    // identischer Algorithmus wie beim klassischen Schweizer ESR-
+    // Einzahlungsschein). Wird NACH der Übernahme der Belegnummer aus dem
+    // Dossier (siehe oben) neu berechnet, damit die Referenz zur finalen
+    // (externen) Belegnummer passt.
+    paymentReferenceLine: {
+      elementName: "PaymentReferenceLine",
+      typeElementName: "PaymentReferenceLineType",
+      typeValueRequired: "QR",
+      fixedPrefix: "66225"
+    }
   };
 
   /* ======================================================================
@@ -402,17 +460,30 @@
   /* ======================================================================
    * TRANSFORMATION EINER EINZELNEN ABRECHNUNG
    * ====================================================================== */
-  function validateInvoiceStructureOrThrow(documentEl) {
-    for (var i = 0; i < CONFIG.fields.length; i++) {
-      var name = CONFIG.fields[i].localName;
-      var matches = getDirectChildrenByLocalName(documentEl, name);
-      if (matches.length > 1) {
-        throw new Error(
-          "Es wurden mehrere Elemente '" + name + "' gefunden - die Struktur dieser Abrechnung " +
-          "ist nicht eindeutig, sie wird übersprungen."
-        );
-      }
+  // Wirft einen Fehler, sobald ein Element mit dem gegebenen Namen mehrfach
+  // direkt unterhalb von "el" vorkommt - die Struktur ist dann nicht mehr
+  // eindeutig genug, um sicher automatisiert zu werden.
+  function assertNoDuplicateOrThrow(el, localName) {
+    var matches = getDirectChildrenByLocalName(el, localName);
+    if (matches.length > 1) {
+      throw new Error(
+        "Es wurden mehrere Elemente '" + localName + "' gefunden - die Struktur ist nicht eindeutig, " +
+        "dieser Eintrag wird übersprungen."
+      );
     }
+  }
+
+  // Prüft ALLE Felder, die transformInvoice() in diesem Durchlauf ergänzen
+  // wird, auf Eindeutigkeit, BEVOR irgendeines davon angefasst wird - so
+  // bleibt eine fehlerhafte Abrechnung vollständig unverändert statt nur
+  // teilweise transformiert. (PaymentReferenceLine/Intercompany laufen in
+  // eigenen, späteren Verarbeitungsschritten und prüfen sich dort selbst.)
+  function validateInvoiceStructureOrThrow(documentEl) {
+    CONFIG.fields.forEach(function (field) {
+      assertNoDuplicateOrThrow(documentEl, field.localName);
+    });
+    assertNoDuplicateOrThrow(documentEl, CONFIG.keyAmountField.localName);
+    assertNoDuplicateOrThrow(documentEl, CONFIG.generalLedgerDateField.localName);
   }
 
   // Ermittelt die im restlichen Dokument verwendete Einrückung, damit neu
@@ -477,6 +548,29 @@
       actions[field.localName] = ensureField(documentEl, field);
     });
     return actions;
+  }
+
+  // KeyAmount ist immer ein reines Duplikat des Werts von Amount (siehe
+  // CONFIG.keyAmountField) - Amount selbst ist Pflichtfeld einer Abrechnung.
+  // Eindeutigkeit von KeyAmount selbst ist bereits durch validateInvoiceStructureOrThrow
+  // sichergestellt (läuft vor dieser Funktion, siehe transformInvoice).
+  function transformInvoiceKeyAmount(documentEl) {
+    var field = CONFIG.keyAmountField;
+    var amount = getDirectChildTextByLocalName(documentEl, "Amount");
+    if (amount == null) {
+      throw new Error("Das Feld 'Amount' fehlt - '" + field.localName + "' kann nicht ermittelt werden.");
+    }
+    return ensureField(documentEl, { localName: field.localName, value: amount, insertAfterLocalName: field.insertAfterLocalName });
+  }
+
+  // Das Fibu-Datum gilt für den gesamten Verarbeitungslauf identisch (siehe
+  // CONFIG.generalLedgerDateField) - der Wert kommt aus dem Formular, nicht
+  // aus der Datei selbst.
+  // Eindeutigkeit von GeneralLedgerDate selbst ist bereits durch
+  // validateInvoiceStructureOrThrow sichergestellt (siehe transformInvoiceKeyAmount).
+  function transformInvoiceGeneralLedgerDate(documentEl, generalLedgerDate) {
+    var field = CONFIG.generalLedgerDateField;
+    return ensureField(documentEl, { localName: field.localName, value: generalLedgerDate, insertAfterLocalName: field.insertAfterLocalName });
   }
 
   /* ======================================================================
@@ -613,6 +707,123 @@
   }
 
   /* ======================================================================
+   * QR-REFERENZZEILE (PaymentReferenceLine) NEU BERECHNEN
+   * ----------------------------------------------------------------------
+   * Muss NACH applyDossierDocumentNumber laufen, damit die Referenz auf der
+   * finalen (ggf. aus dem Dossier übernommenen) Belegnummer basiert - siehe
+   * CONFIG.paymentReferenceLine für den Aufbau (Präfix + Belegnummer +
+   * Modulo-10-Prüfziffer). Rekursive Modulo-10-Tabelle wie beim klassischen
+   * Schweizer ESR-Einzahlungsschein (ISO/IEC 7064 MOD 10).
+   * ====================================================================== */
+  var MOD10_RECURSIVE_TABLE = [
+    [0, 9, 4, 6, 8, 2, 7, 1, 3, 5],
+    [9, 4, 6, 8, 2, 7, 1, 3, 5, 0],
+    [4, 6, 8, 2, 7, 1, 3, 5, 0, 9],
+    [6, 8, 2, 7, 1, 3, 5, 0, 9, 4],
+    [8, 2, 7, 1, 3, 5, 0, 9, 4, 6],
+    [2, 7, 1, 3, 5, 0, 9, 4, 6, 8],
+    [7, 1, 3, 5, 0, 9, 4, 6, 8, 2],
+    [1, 3, 5, 0, 9, 4, 6, 8, 2, 7],
+    [3, 5, 0, 9, 4, 6, 8, 2, 7, 1],
+    [5, 0, 9, 4, 6, 8, 2, 7, 1, 3]
+  ];
+
+  function mod10RecursiveCheckDigit(digits) {
+    var carry = 0;
+    for (var i = 0; i < digits.length; i++) {
+      carry = MOD10_RECURSIVE_TABLE[carry][Number(digits[i])];
+    }
+    return (10 - carry) % 10;
+  }
+
+  function buildPaymentReferenceLine(documentNumber) {
+    var prefix = CONFIG.paymentReferenceLine.fixedPrefix;
+    var bodyWidth = 26 - prefix.length;
+    if (!/^\d+$/.test(documentNumber) || documentNumber.length > bodyWidth) {
+      throw new Error(
+        "Die Belegnummer '" + documentNumber + "' ist für die Berechnung der '" +
+        CONFIG.paymentReferenceLine.elementName + "' ungültig (muss numerisch und höchstens " +
+        bodyWidth + " Stellen lang sein)."
+      );
+    }
+    var body = prefix + documentNumber.padStart(bodyWidth, "0");
+    return body + String(mod10RecursiveCheckDigit(body));
+  }
+
+  // Nur relevant, wenn diese Abrechnung überhaupt eine QR-Referenz nutzt
+  // (PaymentReferenceLineType = "QR"); andere Zahlarten sind kein Fehler,
+  // sondern schlicht "notApplicable".
+  function transformInvoicePaymentReferenceLine(documentEl) {
+    var cfg = CONFIG.paymentReferenceLine;
+    var typeValue = getDirectChildTextByLocalName(documentEl, cfg.typeElementName);
+    if (typeValue !== cfg.typeValueRequired) return "notApplicable";
+    var numberValue = getDirectChildTextByLocalName(documentEl, "Number");
+    if (!numberValue) return "notApplicable";
+    assertNoDuplicateOrThrow(documentEl, cfg.elementName);
+    var newValue = buildPaymentReferenceLine(numberValue);
+    return ensureField(documentEl, { localName: cfg.elementName, value: newValue, insertAfterLocalName: cfg.typeElementName });
+  }
+
+  /* ======================================================================
+   * INTERCOMPANY-NUMMER FÜR INTERNE (KONZERN-)KUNDEN
+   * ----------------------------------------------------------------------
+   * Eigener Verarbeitungspfad, unabhängig von Abrechnungen und Dossier-
+   * Einträgen: betrifft Task -> Transaction -> Customer. Jeder Kunde, dessen
+   * Name (Customer -> AddressData -> Name) in CONFIG.intercompanyByCustomerName
+   * vorkommt, erhält/behält die zugehörige Intercompany-Nummer. Kunden ohne
+   * Treffer sind KEIN Fehler (die meisten Kunden sind schlicht keine
+   * Konzern-internen Kunden).
+   * ====================================================================== */
+  function findCustomerEntries(rootEl) {
+    var entries = [];
+    var tasks = getDirectChildrenByLocalName(rootEl, CONFIG.taskElementName);
+    for (var t = 0; t < tasks.length; t++) {
+      var transactions = getDirectChildrenByLocalName(tasks[t], CONFIG.transactionElementName);
+      for (var tr = 0; tr < transactions.length; tr++) {
+        var customers = getDirectChildrenByLocalName(transactions[tr], CONFIG.customerElementName);
+        for (var c = 0; c < customers.length; c++) {
+          entries.push({ customerEl: customers[c], transactionEl: transactions[tr] });
+        }
+      }
+    }
+    return entries;
+  }
+
+  function getCustomerLabel(customerEl, transactionEl, index) {
+    var customerNumber = getDirectChildTextByLocalName(customerEl, "CustomerNumber");
+    if (customerNumber) return "Kunde Nr. " + customerNumber;
+    var txId = transactionEl && transactionEl.getAttribute ? transactionEl.getAttribute("id") : null;
+    if (txId) return "Transaktion " + txId;
+    return "Kunde #" + (index + 1);
+  }
+
+  // Der für die Intercompany-Zuordnung massgebliche Name steht in
+  // Customer -> AddressData -> Name. Fehlt AddressData oder ist es nicht
+  // eindeutig, kann kein Name ermittelt werden - das ist kein Fehler,
+  // der Kunde wird dann einfach nicht zugeordnet (notMatched).
+  function getCustomerAddressName(customerEl) {
+    var addressMatches = getDirectChildrenByLocalName(customerEl, "AddressData");
+    if (addressMatches.length !== 1) return null;
+    return getDirectChildTextByLocalName(addressMatches[0], "Name");
+  }
+
+  // Rückgabe: "added"/"corrected"/"kept" (siehe ensureField) oder
+  // "notMatched", falls der Kundenname nicht in der Konfiguration vorkommt.
+  function transformCustomerIntercompany(customerEl) {
+    var name = getCustomerAddressName(customerEl);
+    if (name == null || !Object.prototype.hasOwnProperty.call(CONFIG.intercompanyByCustomerName, name)) {
+      return "notMatched";
+    }
+    var field = CONFIG.intercompanyField;
+    assertNoDuplicateOrThrow(customerEl, field.localName);
+    return ensureField(customerEl, {
+      localName: field.localName,
+      value: CONFIG.intercompanyByCustomerName[name],
+      insertAfterLocalName: field.insertAfterLocalName
+    });
+  }
+
+  /* ======================================================================
    * ZUSATZDATEN FÜR DIE ABRECHNUNGSLISTE (Kunden-Stammdaten, Dossier/Datei-
    * Informationen)
    * ----------------------------------------------------------------------
@@ -623,20 +834,15 @@
    * eingemischt - die eigentliche XML-Ausgabe bleibt davon unberührt.
    * ====================================================================== */
   // Kunden-Stammdaten nach CustomerNumber, verknüpft über Document.CustomerNumber.
-  function buildCustomerLookupByNumber(rootEl) {
+  // Nimmt die bereits von findCustomerEntries() eingesammelten Kunden entgegen,
+  // statt Task -> Transaction -> Customer ein zweites Mal selbst zu durchlaufen.
+  function buildCustomerLookupByNumber(customerEntries) {
     var lookup = {};
-    var tasks = getDirectChildrenByLocalName(rootEl, CONFIG.taskElementName);
-    tasks.forEach(function (taskEl) {
-      var transactions = getDirectChildrenByLocalName(taskEl, CONFIG.transactionElementName);
-      transactions.forEach(function (transactionEl) {
-        var customers = getDirectChildrenByLocalName(transactionEl, CONFIG.customerElementName);
-        customers.forEach(function (customerEl) {
-          var customerNumber = getDirectChildTextByLocalName(customerEl, "CustomerNumber");
-          if (customerNumber) {
-            lookup[customerNumber] = flattenElementToRow(customerEl, "Customer.");
-          }
-        });
-      });
+    customerEntries.forEach(function (entry) {
+      var customerNumber = getDirectChildTextByLocalName(entry.customerEl, "CustomerNumber");
+      if (customerNumber) {
+        lookup[customerNumber] = flattenElementToRow(entry.customerEl, "Customer.");
+      }
     });
     return lookup;
   }
@@ -664,10 +870,15 @@
   /* ======================================================================
    * VERARBEITUNG ALLER ABRECHNUNGEN (Orchestrierung)
    * ====================================================================== */
+  // Gemeinsame Zählerform für alle "ensureField"-basierten Schritte.
+  function emptyActionStats() {
+    return { added: 0, kept: 0, corrected: 0 };
+  }
+
   function createEmptyFieldStats() {
     var stats = {};
     CONFIG.fields.forEach(function (f) {
-      stats[f.localName] = { added: 0, kept: 0, corrected: 0 };
+      stats[f.localName] = emptyActionStats();
     });
     return stats;
   }
@@ -684,7 +895,8 @@
 
   // Zentrale Einstiegsfunktion: parst, validiert, erkennt Abrechnungen,
   // transformiert jede einzelne und liefert Statistik + Ergebnis-XML.
-  function processXmlString(xmlText) {
+  function processXmlString(xmlText, options) {
+    options = options || {};
     var result = {
       ok: true,
       fatalError: null,
@@ -701,8 +913,21 @@
       dossierAlreadyRenamedCount: 0,
       dossierErrors: [],
       documentNumberStats: { updated: 0, kept: 0, skipped: 0 },
+      keyAmountStats: emptyActionStats(),
+      generalLedgerDateStats: emptyActionStats(),
+      paymentReferenceLineStats: { added: 0, kept: 0, corrected: 0, notApplicable: 0 },
+      customerCount: 0,
+      customerErrorCount: 0,
+      customerErrors: [],
+      intercompanyStats: { added: 0, kept: 0, corrected: 0, notMatched: 0 },
       serializedXml: null
     };
+
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(options.generalLedgerDate || "")) {
+      result.ok = false;
+      result.fatalError = "Bitte ein gültiges Fibu-Datum (Leistungsdatum, Format JJJJ-MM-TT) auswählen, bevor die Datei verarbeitet wird.";
+      return result;
+    }
 
     var doc;
     try {
@@ -737,6 +962,8 @@
         Object.keys(actions).forEach(function (fieldName) {
           result.fieldStats[fieldName][actions[fieldName]]++;
         });
+        result.keyAmountStats[transformInvoiceKeyAmount(invoice.documentEl)]++;
+        result.generalLedgerDateStats[transformInvoiceGeneralLedgerDate(invoice.documentEl, options.generalLedgerDate)]++;
         invoiceOutcomes.push({
           label: label,
           ok: true,
@@ -770,6 +997,21 @@
       }
     });
 
+    // Intercompany-Nummer für interne (Konzern-)Kunden - unabhängig von
+    // Abrechnungen/Dossier-Einträgen, ein Kunde ohne Namenstreffer ist kein Fehler.
+    var customerEntries = findCustomerEntries(root);
+    result.customerCount = customerEntries.length;
+    customerEntries.forEach(function (entry, index) {
+      var label = getCustomerLabel(entry.customerEl, entry.transactionEl, index);
+      try {
+        var action = transformCustomerIntercompany(entry.customerEl);
+        result.intercompanyStats[action]++;
+      } catch (err) {
+        result.customerErrors.push({ label: label, message: err.message });
+        result.customerErrorCount++;
+      }
+    });
+
     // Belegnummer aus dem (bereits umbenannten) Dossier-Eintrag in die
     // zugehörige Abrechnung übernehmen - siehe applyDossierDocumentNumber.
     // Nur erfolgreich umbenannte Dossier-Einträge werden dafür herangezogen.
@@ -779,6 +1021,7 @@
       try {
         var numberAction = applyDossierDocumentNumber(outcome.documentEl, outcome.originalNumber, dossierDocumentNumberLookup);
         result.documentNumberStats[numberAction]++;
+        result.paymentReferenceLineStats[transformInvoicePaymentReferenceLine(outcome.documentEl)]++;
       } catch (err) {
         outcome.ok = false;
         outcome.message = err.message;
@@ -791,7 +1034,7 @@
     // Zusatzdaten für die Abrechnungsliste erst jetzt nachschlagen: die
     // Kunden-Stammdaten sind unabhängig, die Dossier-Daten sollen aber den
     // finalen Feldnamen (Number statt DocumentName) zeigen.
-    var customersByNumber = buildCustomerLookupByNumber(root);
+    var customersByNumber = buildCustomerLookupByNumber(customerEntries);
     var dossierByBelegNumber = buildDossierLookupByBelegNumber(dossierEntries);
 
     invoiceOutcomes.forEach(function (outcome) {
@@ -841,11 +1084,23 @@
   var fileInput = document.getElementById("fileInput");
   var selectFileBtn = document.getElementById("selectFileBtn");
   var fileNameDisplay = document.getElementById("fileNameDisplay");
+  var generalLedgerDateInput = document.getElementById("generalLedgerDateInput");
   var enrichBtn = document.getElementById("enrichBtn");
   var downloadBtn = document.getElementById("downloadBtn");
   var listBtn = document.getElementById("listBtn");
   var statusArea = document.getElementById("statusArea");
   var resultOverview = document.getElementById("resultOverview");
+
+  // Vorbelegung mit dem letzten Tag des Vormonats (übliches Fibu-Datum für
+  // im Vormonat erbrachte Leistungen) - im Formular jederzeit änderbar.
+  (function prefillGeneralLedgerDate() {
+    var today = new Date();
+    var lastDayOfPreviousMonth = new Date(today.getFullYear(), today.getMonth(), 0);
+    var iso = lastDayOfPreviousMonth.getFullYear() + "-" +
+      String(lastDayOfPreviousMonth.getMonth() + 1).padStart(2, "0") + "-" +
+      String(lastDayOfPreviousMonth.getDate()).padStart(2, "0");
+    generalLedgerDateInput.value = iso;
+  })();
 
   function showStatus(message, kind) {
     statusArea.textContent = message;
@@ -958,6 +1213,10 @@
     html += "<li>'" + f2.localName + "' bereits korrekt vorhanden: " + s2.kept + "</li>";
     html += "<li>'" + f1.localName + "' korrigiert (abweichender Wert): " + s1.corrected + "</li>";
     html += "<li>'" + f2.localName + "' korrigiert (abweichender Wert): " + s2.corrected + "</li>";
+    html += "<li>'" + CONFIG.keyAmountField.localName + "' ergänzt/korrigiert/bereits korrekt: " +
+      result.keyAmountStats.added + " / " + result.keyAmountStats.corrected + " / " + result.keyAmountStats.kept + "</li>";
+    html += "<li>'" + CONFIG.generalLedgerDateField.localName + "' ergänzt/korrigiert/bereits korrekt: " +
+      result.generalLedgerDateStats.added + " / " + result.generalLedgerDateStats.corrected + " / " + result.generalLedgerDateStats.kept + "</li>";
     html += "</ul>";
 
     if (result.errorCount > 0) {
@@ -998,15 +1257,42 @@
       html += "</ul>";
     }
 
+    html += "<h3>QR-Referenzzeile (PaymentReferenceLine)</h3><ul>";
+    html += "<li>Neu ergänzt: " + result.paymentReferenceLineStats.added + "</li>";
+    html += "<li>Neu berechnet (abweichender Wert): " + result.paymentReferenceLineStats.corrected + "</li>";
+    html += "<li>Bereits korrekt vorhanden: " + result.paymentReferenceLineStats.kept + "</li>";
+    html += "<li>Nicht anwendbar (keine QR-Referenz): " + result.paymentReferenceLineStats.notApplicable + "</li>";
+    html += "</ul>";
+
+    html += "<h3>Intercompany-Nummer für interne Kunden</h3><ul>";
+    html += "<li>Geprüfte Kunden: " + result.customerCount + "</li>";
+    html += "<li>Neu ergänzt: " + result.intercompanyStats.added + "</li>";
+    html += "<li>Bereits korrekt vorhanden: " + result.intercompanyStats.kept + "</li>";
+    html += "<li>Korrigiert (abweichender Wert): " + result.intercompanyStats.corrected + "</li>";
+    html += "<li>Kein interner Kunde (Name nicht in der Liste): " + result.intercompanyStats.notMatched + "</li>";
+    html += "</ul>";
+
+    if (result.customerErrorCount > 0) {
+      html += "<div class=\"warning-banner\">⚠ Achtung: " + result.customerErrorCount + " von " + result.customerCount +
+        " Kunde(n) konnten NICHT geprüft werden und bleiben im Ergebnis unverändert. " +
+        "Bitte prüfen Sie diese Fälle vor der Weitergabe:</div>";
+      html += "<ul class=\"error-list\">";
+      result.customerErrors.forEach(function (e) {
+        html += "<li><strong>" + escapeHtml(e.label) + ":</strong> " + escapeHtml(e.message) + "</li>";
+      });
+      html += "</ul>";
+    }
+
     resultOverview.innerHTML = html;
     resultOverview.hidden = false;
 
-    var hasAnyError = result.errorCount > 0 || result.dossierErrorCount > 0;
+    var hasAnyError = result.errorCount > 0 || result.dossierErrorCount > 0 || result.customerErrorCount > 0;
     if (hasAnyError) {
       showStatus(
         "Verarbeitung mit Einschränkungen abgeschlossen: " + result.errorCount + " von " + result.invoiceCount +
-        " Abrechnung(en) und " + result.dossierErrorCount + " von " + result.dossierCount +
-        " Dossier-Eintrag/Einträge konnten nicht verarbeitet werden.",
+        " Abrechnung(en), " + result.dossierErrorCount + " von " + result.dossierCount +
+        " Dossier-Eintrag/Einträge und " + result.customerErrorCount + " von " + result.customerCount +
+        " Kunde(n) konnten nicht verarbeitet werden.",
         "warning"
       );
     } else {
@@ -1306,6 +1592,10 @@
   });
 
   enrichBtn.addEventListener("click", function () {
+    if (!generalLedgerDateInput.value) {
+      showStatus("Bitte zuerst ein Fibu-Datum (Leistungsdatum) auswählen.", "error");
+      return;
+    }
     showStatus("Abrechnungen werden verarbeitet…", "info");
     downloadBtn.disabled = true;
     listBtn.disabled = true;
@@ -1313,7 +1603,7 @@
     // Kurzes Timeout, damit die Statusmeldung sichtbar wird, bevor die
     // (synchrone) Verarbeitung startet.
     setTimeout(function () {
-      var result = processXmlString(state.xmlText);
+      var result = processXmlString(state.xmlText, { generalLedgerDate: generalLedgerDateInput.value });
       renderResult(result);
     }, 0);
   });
@@ -1328,6 +1618,10 @@
    * Entwicklerkonsole mittels runMocoSelfTests(). Die Tests nutzen exakt
    * dieselben Funktionen wie die eigentliche Anwendung.
    * ====================================================================== */
+  // Festes Test-Fibu-Datum, da processXmlString() dieses inzwischen
+  // zwingend über options.generalLedgerDate erwartet (siehe CONFIG.generalLedgerDateField).
+  var TEST_GENERAL_LEDGER_DATE = "2026-07-31";
+
   function check(results, name, actual, expected) {
     var passed = JSON.stringify(actual) === JSON.stringify(expected);
     results.push({
@@ -1351,10 +1645,14 @@
     var customerNumber = opts.customerNumber != null ? opts.customerNumber : "210102";
     var amount = opts.amount != null ? opts.amount : "100.0";
     var text = opts.text || "Testrechnung";
+    var accountReceivableDateXml = fieldsXml.accountReceivableDateXml != null
+      ? fieldsXml.accountReceivableDateXml
+      : ("<" + p + "AccountReceivableDate>2026-08-01</" + p + "AccountReceivableDate>");
     var divisionXml = fieldsXml.divisionXml != null ? fieldsXml.divisionXml : "";
     var paymentOrderProcedureXml = fieldsXml.paymentOrderProcedureXml != null
       ? fieldsXml.paymentOrderProcedureXml
       : ("<" + p + "PaymentOrderProcedure>0</" + p + "PaymentOrderProcedure>");
+    var paymentReferenceXml = fieldsXml.paymentReferenceXml != null ? fieldsXml.paymentReferenceXml : "";
     return (
       "<" + p + "Document mode=\"SAVE\">" +
       "<" + p + "DocumentCode>R</" + p + "DocumentCode>" +
@@ -1362,8 +1660,10 @@
       divisionXml +
       "<" + p + "Number>" + number + "</" + p + "Number>" +
       "<" + p + "Text>" + text + "</" + p + "Text>" +
+      accountReceivableDateXml +
       "<" + p + "Amount>" + amount + "</" + p + "Amount>" +
       paymentOrderProcedureXml +
+      paymentReferenceXml +
       "</" + p + "Document>"
     );
   }
@@ -1393,7 +1693,7 @@
 
   function test1(results) {
     var xml = wrapDocuments([makeDocumentXml({}, { number: "1001" })]);
-    var r = processXmlString(xml);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
     check(results, "Test 1: eine Abrechnung, invoiceCount", r.invoiceCount, 1);
     check(results, "Test 1: eine Abrechnung, processedCount", r.processedCount, 1);
     check(results, "Test 1: Division hinzugefügt", r.fieldStats.Division.added, 1);
@@ -1406,7 +1706,7 @@
       makeDocumentXml({}, { number: "2002" }),
       makeDocumentXml({}, { number: "2003" })
     ]);
-    var r = processXmlString(xml);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
     check(results, "Test 2: mehrere Abrechnungen, invoiceCount = 3", r.invoiceCount, 3);
     check(results, "Test 2: mehrere Abrechnungen, processedCount = 3", r.processedCount, 3);
     var allHandled = r.invoiceResults.every(function (ir) {
@@ -1420,7 +1720,7 @@
       return makeDocumentXml({ paymentOrderProcedureXml: "" }, { number: "30" + n });
     });
     var xml = wrapDocuments(specs);
-    var r = processXmlString(xml);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
     check(results, "Test 3: 4 Abrechnungen, beide Felder fehlen komplett - Division added", r.fieldStats.Division.added, 4);
     check(results, "Test 3: 4 Abrechnungen, beide Felder fehlen komplett - PaymentOrderProcedure added", r.fieldStats.PaymentOrderProcedure.added, 4);
     check(results, "Test 3: keine bereits korrekt vorhanden", r.fieldStats.Division.kept + r.fieldStats.PaymentOrderProcedure.kept, 0);
@@ -1434,7 +1734,7 @@
       );
     });
     var xml = wrapDocuments(specs);
-    var r = processXmlString(xml);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
     check(results, "Test 4: beide Felder bereits korrekt überall - added=0", r.fieldStats.Division.added + r.fieldStats.PaymentOrderProcedure.added, 0);
     check(results, "Test 4: Division kept=3", r.fieldStats.Division.kept, 3);
     check(results, "Test 4: PaymentOrderProcedure kept=3", r.fieldStats.PaymentOrderProcedure.kept, 3);
@@ -1450,7 +1750,7 @@
     // Division vorhanden; PaymentOrderProcedure nicht angegeben -> Default "0" (vorhanden, aber falscher Wert)
     var doc3 = makeDocumentXml({ divisionXml: "<Division>390</Division>" }, { number: "5003" });
     var xml = wrapDocuments([doc1, doc2, doc3]);
-    var r = processXmlString(xml);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
     check(results, "Test 5: Division added=1 (nur bei Abrechnung 1)", r.fieldStats.Division.added, 1);
     check(results, "Test 5: Division kept=2", r.fieldStats.Division.kept, 2);
     check(results, "Test 5: PaymentOrderProcedure added=1 (nur bei Abrechnung 1)", r.fieldStats.PaymentOrderProcedure.added, 1);
@@ -1463,7 +1763,7 @@
       return makeDocumentXml({ divisionXml: "<Division>390</Division>", paymentOrderProcedureXml: "" }, { number: "60" + n });
     });
     var xml = wrapDocuments(specs);
-    var r = processXmlString(xml);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
     check(results, "Test 6: Division bereits vorhanden - kept=2", r.fieldStats.Division.kept, 2);
     check(results, "Test 6: PaymentOrderProcedure wird ergänzt - added=2", r.fieldStats.PaymentOrderProcedure.added, 2);
   }
@@ -1473,7 +1773,7 @@
       return makeDocumentXml({ paymentOrderProcedureXml: "<PaymentOrderProcedure>3920</PaymentOrderProcedure>" }, { number: "70" + n });
     });
     var xml = wrapDocuments(specs);
-    var r = processXmlString(xml);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
     check(results, "Test 7: PaymentOrderProcedure bereits korrekt - kept=2", r.fieldStats.PaymentOrderProcedure.kept, 2);
     check(results, "Test 7: Division wird ergänzt - added=2", r.fieldStats.Division.added, 2);
   }
@@ -1484,7 +1784,7 @@
       { number: "8001" }
     );
     var xml = wrapDocuments([doc1]);
-    var r = processXmlString(xml);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
     check(results, "Test 8: abweichender Wert wird korrigiert - Division corrected=1", r.fieldStats.Division.corrected, 1);
     check(results, "Test 8: PaymentOrderProcedure bereits korrekt - kept=1", r.fieldStats.PaymentOrderProcedure.kept, 1);
     var doc = new DOMParser().parseFromString(r.serializedXml, "application/xml");
@@ -1511,7 +1811,7 @@
     // Abrechnung C: unauffällig, muss trotz der zwei Fehler weiterhin verarbeitet werden
     var docOk = makeDocumentXml({}, { number: "9003" });
     var xml = wrapDocuments([docDuplicate, docMissingAnchor, docOk]);
-    var r = processXmlString(xml);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
     check(results, "Test 9: invoiceCount=3", r.invoiceCount, 3);
     check(results, "Test 9: zwei Abrechnungen fehlerhaft (doppeltes Feld / fehlende Einfügeposition)", r.errorCount, 2);
     check(results, "Test 9: verbleibende Abrechnung trotzdem verarbeitet", r.processedCount, 1);
@@ -1521,7 +1821,7 @@
 
   function test10(results) {
     var xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?><FooContainer><Task/></FooContainer>";
-    var r = processXmlString(xml);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
     check(results, "Test 10: falsches Wurzelelement - ok=false", r.ok, false);
     check(results, "Test 10: fatalError vorhanden", typeof r.fatalError === "string" && r.fatalError.length > 0, true);
   }
@@ -1533,21 +1833,21 @@
       "<Parameter><Application>DEBI</Application><Id>Kunden</Id></Parameter>" +
       "<Transaction id=\"1\"><Customer mode=\"SAVE\"><CustomerNumber>1</CustomerNumber></Customer></Transaction>" +
       "</Task></AbaConnectContainer>";
-    var r = processXmlString(xml);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
     check(results, "Test 11: keine Abrechnung gefunden - ok=false", r.ok, false);
     check(results, "Test 11: invoiceCount=0", r.invoiceCount, 0);
   }
 
   function test12(results) {
     var xml = "<AbaConnectContainer><Task><Transaction id=\"1\"><Document mode=\"SAVE\"</Document></Transaction></Task>";
-    var r = processXmlString(xml);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
     check(results, "Test 12: ungültiges XML - ok=false", r.ok, false);
   }
 
   function test13(results) {
     var ns = "urn:test:aba";
     var xml = wrapDocuments([makeDocumentXml({}, { number: "13001" })], { xmlnsAttr: " xmlns=\"" + ns + "\"" });
-    var r = processXmlString(xml);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
     check(results, "Test 13: XML mit Namespace - processedCount=1", r.processedCount, 1);
     var doc = new DOMParser().parseFromString(r.serializedXml, "application/xml");
     var el = doc.getElementsByTagNameNS(ns, "Division")[0];
@@ -1560,7 +1860,7 @@
       [makeDocumentXml({}, { number: "14001", prefix: "xyz" })],
       { xmlnsAttr: " xmlns:xyz=\"" + ns + "\"", prefix: "xyz" }
     );
-    var r = processXmlString(xml);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
     check(results, "Test 14: abweichendes Namespace-Präfix - processedCount=1", r.processedCount, 1);
     var doc = new DOMParser().parseFromString(r.serializedXml, "application/xml");
     var el = doc.getElementsByTagNameNS(ns, "Division")[0];
@@ -1570,7 +1870,7 @@
   function test15(results) {
     var specialText = "Rechnung – Jährliche Wartung «Straße/Zürich» ÄÖÜäöüß€";
     var xml = wrapDocuments([makeDocumentXml({}, { number: "15001", text: specialText })]);
-    var r = processXmlString(xml);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
     check(results, "Test 15: Sonderzeichen/Umlaute - processedCount=1", r.processedCount, 1);
     check(results, "Test 15: Sonderzeichen bleiben im Ergebnis erhalten", r.serializedXml.indexOf(specialText) !== -1, true);
   }
@@ -1581,7 +1881,7 @@
       specs.push(makeDocumentXml({}, { number: "16" + String(i).padStart(3, "0") }));
     }
     var xml = wrapDocuments(specs);
-    var r = processXmlString(xml);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
     check(results, "Test 16: 12 Abrechnungen erkannt", r.invoiceCount, 12);
     check(results, "Test 16: alle 12 verarbeitet", r.processedCount, 12);
     check(results, "Test 16: Division bei allen 12 ergänzt", r.fieldStats.Division.added, 12);
@@ -1669,12 +1969,40 @@
     );
   }
 
+  // Baut eine <Transaction><Customer>...<AddressData><Name>...</Name></AddressData>...</Customer></Transaction>,
+  // analog zur echten MOCO-Kundenstruktur. intercompanyXml erlaubt es, ein
+  // bereits vorhandenes <Intercompany>-Feld gezielt vorzugeben (oder per
+  // doppeltem Feld eine mehrdeutige Struktur zu simulieren).
+  function makeCustomerTransactionXml(opts) {
+    opts = opts || {};
+    var p = opts.prefix ? opts.prefix + ":" : "";
+    var txId = opts.txId || "1";
+    var customerNumber = opts.customerNumber || "2200000";
+    var name = opts.name != null ? opts.name : "Testkunde AG";
+    var intercompanyXml = opts.intercompanyXml || "";
+    return (
+      "<" + p + "Transaction id=\"" + txId + "\">" +
+      "<" + p + "Customer mode=\"SAVE\">" +
+      "<" + p + "UniqueReference>" + name + "</" + p + "UniqueReference>" +
+      "<" + p + "CustomerNumber>" + customerNumber + "</" + p + "CustomerNumber>" +
+      "<" + p + "DefaultCurrency>CHF</" + p + "DefaultCurrency>" +
+      intercompanyXml +
+      "<" + p + "AddressData mode=\"SAVE\">" +
+      "<" + p + "AddressNumber>" + customerNumber + "</" + p + "AddressNumber>" +
+      "<" + p + "Name>" + name + "</" + p + "Name>" +
+      "<" + p + "Country>CH</" + p + "Country>" +
+      "</" + p + "AddressData>" +
+      "</" + p + "Customer>" +
+      "</" + p + "Transaction>"
+    );
+  }
+
   function test17(results) {
     var belegeTask = makeBelegeTaskXml([makeDocumentXml({}, { number: "17001" })]);
     var dossierTx = makeDossierTransactionXml({ belegNumber: "17001", innerFieldXml: "<DocumentName>TR900001</DocumentName>" });
     var dossierTask = makeTaskXml("BelegDossier", [dossierTx]);
     var xml = wrapTasks([belegeTask, dossierTask]);
-    var r = processXmlString(xml);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
     check(results, "Test 17: ein Dossier-Eintrag gefunden", r.dossierCount, 1);
     check(results, "Test 17: DocumentName wird zu Number umbenannt", r.dossierRenamedCount, 1);
 
@@ -1696,7 +2024,7 @@
     });
     var dossierTask = makeTaskXml("BelegDossier", dossierTxs);
     var xml = wrapTasks([belegeTask, dossierTask]);
-    var r = processXmlString(xml);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
     check(results, "Test 18: 3 Dossier-Einträge gefunden", r.dossierCount, 3);
     check(results, "Test 18: alle 3 umbenannt (nicht nur der erste)", r.dossierRenamedCount, 3);
     check(results, "Test 18: keine Fehler", r.dossierErrorCount, 0);
@@ -1715,7 +2043,7 @@
     var dossierTx = makeDossierTransactionXml({ belegNumber: "19001", innerFieldXml: "<Number>ALREADY123</Number>" });
     var dossierTask = makeTaskXml("BelegDossier", [dossierTx]);
     var xml = wrapTasks([belegeTask, dossierTask]);
-    var r = processXmlString(xml);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
     check(results, "Test 19: bereits umbenannt - kein erneutes Umbenennen (renamedCount=0)", r.dossierRenamedCount, 0);
     check(results, "Test 19: bereits umbenannt - trotzdem als verarbeitet gezählt", r.dossierProcessedCount, 1);
 
@@ -1731,7 +2059,7 @@
     var dossierOk = makeDossierTransactionXml({ txId: "3", belegNumber: "20103", innerFieldXml: "<DocumentName>OK</DocumentName>" });
     var dossierTask = makeTaskXml("BelegDossier", [dossierMissing, dossierDuplicate, dossierOk]);
     var xml = wrapTasks([belegeTask, dossierTask]);
-    var r = processXmlString(xml);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
     check(results, "Test 20: 3 Dossier-Einträge gefunden", r.dossierCount, 3);
     check(results, "Test 20: 2 Einträge fehlerhaft (weder Feld gefunden / doppeltes Feld)", r.dossierErrorCount, 2);
     check(results, "Test 20: verbleibender Eintrag trotzdem verarbeitet", r.dossierProcessedCount, 1);
@@ -1740,7 +2068,7 @@
   function test21(results) {
     var belegeTask = makeBelegeTaskXml([makeDocumentXml({}, { number: "21001" })]);
     var xml = wrapTasks([belegeTask]);
-    var r = processXmlString(xml);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
     check(results, "Test 21: kein BelegDossier-Task vorhanden - kein fataler Fehler", r.ok, true);
     check(results, "Test 21: dossierCount=0", r.dossierCount, 0);
     check(results, "Test 21: Abrechnung wird trotzdem normal verarbeitet", r.processedCount, 1);
@@ -1755,7 +2083,7 @@
     var dossierTx = makeDossierTransactionXml({ belegNumber: "22001", innerFieldXml: "<DocumentName>5902522</DocumentName>" });
     var dossierTask = makeTaskXml("BelegDossier", [dossierTx]);
     var xml = wrapTasks([belegeTask, dossierTask]);
-    var r = processXmlString(xml);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
     check(results, "Test 22: Belegnummer aus Dossier übernommen (updated=1)", r.documentNumberStats.updated, 1);
 
     var doc = new DOMParser().parseFromString(r.serializedXml, "application/xml");
@@ -1771,7 +2099,7 @@
     });
     var dossierTask = makeTaskXml("BelegDossier", dossierTxs);
     var xml = wrapTasks([belegeTask, dossierTask]);
-    var r = processXmlString(xml);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
     check(results, "Test 23: alle 3 Belegnummern übernommen (updated=3, nicht nur die erste)", r.documentNumberStats.updated, 3);
 
     var doc = new DOMParser().parseFromString(r.serializedXml, "application/xml");
@@ -1789,7 +2117,7 @@
     var dossierTx = makeDossierTransactionXml({ belegNumber: "99999", innerFieldXml: "<DocumentName>SHOULDNOTAPPLY</DocumentName>" });
     var dossierTask = makeTaskXml("BelegDossier", [dossierTx]);
     var xml = wrapTasks([belegeTask, dossierTask]);
-    var r = processXmlString(xml);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
     check(results, "Test 24: keine passende Beleg-Nummer - skipped=1", r.documentNumberStats.skipped, 1);
     check(results, "Test 24: kein Fehler durch fehlenden Treffer", r.errorCount, 0);
 
@@ -1803,7 +2131,7 @@
     var dossierTx = makeDossierTransactionXml({ belegNumber: "25001", innerFieldXml: "<DocumentName>25001</DocumentName>" });
     var dossierTask = makeTaskXml("BelegDossier", [dossierTx]);
     var xml = wrapTasks([belegeTask, dossierTask]);
-    var r = processXmlString(xml);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
     check(results, "Test 25: Wert stimmt bereits überein - kept=1", r.documentNumberStats.kept, 1);
     check(results, "Test 25: kein unnötiges 'updated'", r.documentNumberStats.updated, 0);
   }
@@ -1814,10 +2142,229 @@
     var dossierTx2 = makeDossierTransactionXml({ txId: "2", belegNumber: "26001", innerFieldXml: "<DocumentName>BBB</DocumentName>" });
     var dossierTask = makeTaskXml("BelegDossier", [dossierTx1, dossierTx2]);
     var xml = wrapTasks([belegeTask, dossierTask]);
-    var r = processXmlString(xml);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
     check(results, "Test 26: mehrdeutige Beleg-Nummer im Dossier - Abrechnung wird als Fehler markiert", r.errorCount, 1);
     check(results, "Test 26: dadurch keine erfolgreich verarbeitete Abrechnung mehr", r.processedCount, 0);
     check(results, "Test 26: beide Dossier-Einträge selbst wurden dennoch erfolgreich umbenannt", r.dossierRenamedCount, 2);
+  }
+
+  // --- Tests für die Intercompany-Nummer bei internen (Konzern-)Kunden
+  // (Customer -> AddressData -> Name -> CONFIG.intercompanyByCustomerName). ---
+
+  function test27(results) {
+    var belegeTask = makeBelegeTaskXml([makeDocumentXml({}, { number: "27001" })]);
+    var kundenTx = makeCustomerTransactionXml({ customerNumber: "2200067", name: "Galledia Print AG" });
+    var kundenTask = makeTaskXml("Kunden", [kundenTx]);
+    var xml = wrapTasks([belegeTask, kundenTask]);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
+    check(results, "Test 27: Intercompany für internen Kunden neu ergänzt (added=1)", r.intercompanyStats.added, 1);
+    check(results, "Test 27: kein Fehler", r.customerErrorCount, 0);
+
+    var doc = new DOMParser().parseFromString(r.serializedXml, "application/xml");
+    var customerEl = doc.getElementsByTagName("Customer")[0];
+    var children = Array.prototype.slice.call(customerEl.children);
+    var intercompanyEl = null, defaultCurrencyEl = null, addressDataEl = null;
+    children.forEach(function (c) {
+      if (c.localName === "Intercompany") intercompanyEl = c;
+      if (c.localName === "DefaultCurrency") defaultCurrencyEl = c;
+      if (c.localName === "AddressData") addressDataEl = c;
+    });
+    check(results, "Test 27: Intercompany-Wert = 3920", intercompanyEl ? intercompanyEl.textContent : null, "3920");
+    check(results, "Test 27: Intercompany steht direkt nach DefaultCurrency", intercompanyEl.previousElementSibling === defaultCurrencyEl, true);
+    check(results, "Test 27: Intercompany steht direkt vor AddressData", intercompanyEl.nextElementSibling === addressDataEl, true);
+  }
+
+  function test28(results) {
+    var belegeTask = makeBelegeTaskXml([makeDocumentXml({}, { number: "28001" })]);
+    var kundenTxs = [
+      makeCustomerTransactionXml({ txId: "1", customerNumber: "2200067", name: "Galledia Print AG" }),
+      makeCustomerTransactionXml({ txId: "2", customerNumber: "2200029", name: "galledia group ag" }),
+      makeCustomerTransactionXml({ txId: "3", customerNumber: "2200072", name: "Antalis AG" })
+    ];
+    var kundenTask = makeTaskXml("Kunden", kundenTxs);
+    var xml = wrapTasks([belegeTask, kundenTask]);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
+    check(results, "Test 28: 3 Kunden geprüft", r.customerCount, 3);
+    check(results, "Test 28: 2 interne Kunden erhalten Intercompany (added=2)", r.intercompanyStats.added, 2);
+    check(results, "Test 28: 1 externer Kunde ohne Treffer (notMatched=1)", r.intercompanyStats.notMatched, 1);
+
+    var doc = new DOMParser().parseFromString(r.serializedXml, "application/xml");
+    var antalisCustomer = Array.prototype.slice.call(doc.getElementsByTagName("Customer")).filter(function (c) {
+      return getDirectChildTextByLocalName(c, "CustomerNumber") === "2200072";
+    })[0];
+    check(results, "Test 28: externer Kunde bekommt KEIN Intercompany-Feld", getDirectChildrenByLocalName(antalisCustomer, "Intercompany").length, 0);
+  }
+
+  function test29(results) {
+    var belegeTask = makeBelegeTaskXml([makeDocumentXml({}, { number: "29001" })]);
+    var kundenTx = makeCustomerTransactionXml({
+      customerNumber: "2200029", name: "galledia group ag",
+      intercompanyXml: "<Intercompany>3910</Intercompany>"
+    });
+    var kundenTask = makeTaskXml("Kunden", [kundenTx]);
+    var xml = wrapTasks([belegeTask, kundenTask]);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
+    check(results, "Test 29: Wert bereits korrekt - kept=1", r.intercompanyStats.kept, 1);
+    check(results, "Test 29: kein unnötiges 'added'", r.intercompanyStats.added, 0);
+  }
+
+  function test30(results) {
+    var belegeTask = makeBelegeTaskXml([makeDocumentXml({}, { number: "30001" })]);
+    var kundenTx = makeCustomerTransactionXml({
+      customerNumber: "2200033", name: "Galledia Regionalmedien AG",
+      intercompanyXml: "<Intercompany>0000</Intercompany>"
+    });
+    var kundenTask = makeTaskXml("Kunden", [kundenTx]);
+    var xml = wrapTasks([belegeTask, kundenTask]);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
+    check(results, "Test 30: abweichender Wert wird korrigiert (corrected=1)", r.intercompanyStats.corrected, 1);
+
+    var doc = new DOMParser().parseFromString(r.serializedXml, "application/xml");
+    var intercompanyEl = doc.getElementsByTagName("Intercompany")[0];
+    check(results, "Test 30: finaler Wert nach Korrektur = 3940", intercompanyEl.textContent, "3940");
+  }
+
+  function test31(results) {
+    var belegeTask = makeBelegeTaskXml([makeDocumentXml({}, { number: "31001" })]);
+    var kundenTx = makeCustomerTransactionXml({
+      customerNumber: "2200099", name: "Galledia Print AG",
+      intercompanyXml: "<Intercompany>A</Intercompany><Intercompany>B</Intercompany>"
+    });
+    var kundenTask = makeTaskXml("Kunden", [kundenTx]);
+    var xml = wrapTasks([belegeTask, kundenTask]);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
+    check(results, "Test 31: doppeltes Intercompany-Feld - Kunde wird als Fehler markiert", r.customerErrorCount, 1);
+    check(results, "Test 31: Abrechnung selbst bleibt davon unberührt", r.processedCount, 1);
+  }
+
+  function test32(results) {
+    var belegeTask = makeBelegeTaskXml([makeDocumentXml({}, { number: "32001" })]);
+    var kundenTask = makeTaskXml("Kunden", [
+      makeCustomerTransactionXml({ customerNumber: "2200072", name: "Antalis AG" })
+    ]);
+    var xml = wrapTasks([belegeTask, kundenTask]);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
+    check(results, "Test 32: kein interner Kunde vorhanden - kein Fehler", r.ok, true);
+    check(results, "Test 32: customerErrorCount=0", r.customerErrorCount, 0);
+    check(results, "Test 32: notMatched=1", r.intercompanyStats.notMatched, 1);
+  }
+
+  // --- Tests für GeneralLedgerDate (Fibu-Datum aus dem Formular), KeyAmount
+  // (Kontroll-Duplikat von Amount) und PaymentReferenceLine (QR-Referenz). ---
+
+  function test33(results) {
+    var xml = wrapDocuments([makeDocumentXml({}, { number: "33001" })]);
+    var r = processXmlString(xml, { generalLedgerDate: "2026-07-31" });
+    check(results, "Test 33: GeneralLedgerDate neu ergänzt (added=1)", r.generalLedgerDateStats.added, 1);
+    var doc = new DOMParser().parseFromString(r.serializedXml, "application/xml");
+    var el = getDirectChildrenByLocalName(doc.getElementsByTagName("Document")[0], "GeneralLedgerDate")[0];
+    check(results, "Test 33: Wert = gewähltes Datum", el.textContent, "2026-07-31");
+    var accountReceivableDateEl = getDirectChildrenByLocalName(doc.getElementsByTagName("Document")[0], "AccountReceivableDate")[0];
+    check(results, "Test 33: GeneralLedgerDate steht direkt nach AccountReceivableDate", el.previousElementSibling === accountReceivableDateEl, true);
+  }
+
+  function test34(results) {
+    var xml = wrapDocuments([makeDocumentXml(
+      { accountReceivableDateXml: "<AccountReceivableDate>2026-08-01</AccountReceivableDate><GeneralLedgerDate>1999-01-01</GeneralLedgerDate>" },
+      { number: "34001" }
+    )]);
+    var r = processXmlString(xml, { generalLedgerDate: "2026-07-31" });
+    check(results, "Test 34: abweichender Wert wird korrigiert (corrected=1)", r.generalLedgerDateStats.corrected, 1);
+    var doc = new DOMParser().parseFromString(r.serializedXml, "application/xml");
+    var el = getDirectChildrenByLocalName(doc.getElementsByTagName("Document")[0], "GeneralLedgerDate")[0];
+    check(results, "Test 34: finaler Wert = gewähltes Datum", el.textContent, "2026-07-31");
+  }
+
+  function test35(results) {
+    var xml = wrapDocuments([makeDocumentXml(
+      { accountReceivableDateXml: "<AccountReceivableDate>2026-08-01</AccountReceivableDate><GeneralLedgerDate>2026-07-31</GeneralLedgerDate>" },
+      { number: "35001" }
+    )]);
+    var r = processXmlString(xml, { generalLedgerDate: "2026-07-31" });
+    check(results, "Test 35: Wert stimmt bereits überein - kept=1", r.generalLedgerDateStats.kept, 1);
+    check(results, "Test 35: kein unnötiges 'added'", r.generalLedgerDateStats.added, 0);
+  }
+
+  function test36(results) {
+    var xml = wrapDocuments([makeDocumentXml({}, { number: "36001" })]);
+    var r1 = processXmlString(xml, {});
+    check(results, "Test 36: fehlendes Fibu-Datum - ok=false", r1.ok, false);
+    check(results, "Test 36: fatalError vorhanden", typeof r1.fatalError === "string" && r1.fatalError.length > 0, true);
+    var r2 = processXmlString(xml, { generalLedgerDate: "31.07.2026" });
+    check(results, "Test 36: falsches Datumsformat - ebenfalls ok=false", r2.ok, false);
+  }
+
+  function test37(results) {
+    var xml = wrapDocuments([makeDocumentXml({}, { number: "37001", amount: "1234.5" })]);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
+    check(results, "Test 37: KeyAmount neu ergänzt (added=1)", r.keyAmountStats.added, 1);
+    var doc = new DOMParser().parseFromString(r.serializedXml, "application/xml");
+    var documentEl = doc.getElementsByTagName("Document")[0];
+    var keyAmountEl = getDirectChildrenByLocalName(documentEl, "KeyAmount")[0];
+    var amountEl = getDirectChildrenByLocalName(documentEl, "Amount")[0];
+    check(results, "Test 37: KeyAmount = Amount", keyAmountEl.textContent, "1234.5");
+    check(results, "Test 37: KeyAmount steht direkt nach Amount", keyAmountEl.previousElementSibling === amountEl, true);
+  }
+
+  function test38(results) {
+    // Bereits vorhandenes, aber falsches KeyAmount (weicht von Amount ab).
+    var docWithWrongKeyAmount = makeDocumentXml({ paymentOrderProcedureXml: "<KeyAmount>0.0</KeyAmount><PaymentOrderProcedure>0</PaymentOrderProcedure>" }, { number: "38002", amount: "77.7" });
+    var xml = wrapDocuments([docWithWrongKeyAmount]);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
+    check(results, "Test 38: abweichender Wert wird korrigiert (corrected=1)", r.keyAmountStats.corrected, 1);
+    var doc = new DOMParser().parseFromString(r.serializedXml, "application/xml");
+    var keyAmountEl = doc.getElementsByTagName("KeyAmount")[0];
+    check(results, "Test 38: finaler Wert = Amount (77.7)", keyAmountEl.textContent, "77.7");
+  }
+
+  function test39(results) {
+    var docWithCorrectKeyAmount = makeDocumentXml({ paymentOrderProcedureXml: "<KeyAmount>88.8</KeyAmount><PaymentOrderProcedure>0</PaymentOrderProcedure>" }, { number: "39001", amount: "88.8" });
+    var xml = wrapDocuments([docWithCorrectKeyAmount]);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
+    check(results, "Test 39: Wert stimmt bereits überein - kept=1", r.keyAmountStats.kept, 1);
+    check(results, "Test 39: kein unnötiges 'added'", r.keyAmountStats.added, 0);
+  }
+
+  function test40(results) {
+    // Bekannter echter Beleg aus der Referenzdatei: Number 8265389 -> PaymentReferenceLine 662250000000000000082653890.
+    var docXml = makeDocumentXml(
+      { paymentReferenceXml: "<PaymentReferenceLineType>QR</PaymentReferenceLineType>" },
+      { number: "8265389" }
+    );
+    var xml = wrapDocuments([docXml]);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
+    check(results, "Test 40: PaymentReferenceLine neu ergänzt (added=1)", r.paymentReferenceLineStats.added, 1);
+    var doc = new DOMParser().parseFromString(r.serializedXml, "application/xml");
+    var el = doc.getElementsByTagName("PaymentReferenceLine")[0];
+    check(results, "Test 40: berechneter Wert entspricht dem echten Referenzbeleg", el.textContent, "662250000000000000082653890");
+    check(results, "Test 40: buildPaymentReferenceLine() liefert denselben Wert", buildPaymentReferenceLine("8265389"), "662250000000000000082653890");
+  }
+
+  function test41(results) {
+    // Integrationstest: die PaymentReferenceLine muss auf der FINALEN Belegnummer
+    // basieren, also erst NACH der Übernahme der Belegnummer aus dem Dossier berechnet werden.
+    var belegeTask = makeBelegeTaskXml([makeDocumentXml(
+      { paymentReferenceXml: "<PaymentReferenceLineType>QR</PaymentReferenceLineType>" },
+      { number: "41001" }
+    )]);
+    var dossierTx = makeDossierTransactionXml({ belegNumber: "41001", innerFieldXml: "<DocumentName>5902522</DocumentName>" });
+    var dossierTask = makeTaskXml("BelegDossier", [dossierTx]);
+    var xml = wrapTasks([belegeTask, dossierTask]);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
+    check(results, "Test 41: Belegnummer aus Dossier übernommen", r.documentNumberStats.updated, 1);
+    check(results, "Test 41: PaymentReferenceLine ergänzt", r.paymentReferenceLineStats.added, 1);
+    var doc = new DOMParser().parseFromString(r.serializedXml, "application/xml");
+    var el = doc.getElementsByTagName("PaymentReferenceLine")[0];
+    check(results, "Test 41: PaymentReferenceLine basiert auf der NEUEN (Dossier-)Nummer, nicht der alten", el.textContent, buildPaymentReferenceLine("5902522"));
+  }
+
+  function test42(results) {
+    // Kein QR-Verfahren (PaymentReferenceLineType fehlt) - keine Referenz zu berechnen, kein Fehler.
+    var xml = wrapDocuments([makeDocumentXml({}, { number: "42001" })]);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
+    check(results, "Test 42: kein QR-Verfahren - notApplicable=1", r.paymentReferenceLineStats.notApplicable, 1);
+    check(results, "Test 42: kein Fehler dadurch", r.errorCount, 0);
+    check(results, "Test 42: kein PaymentReferenceLine-Element eingefügt", r.serializedXml.indexOf("PaymentReferenceLine") !== -1, false);
   }
 
   function runMocoSelfTests() {
@@ -1825,7 +2372,8 @@
     var tests = [
       test1, test2, test3, test4, test5, test6, test7, test8, test9, test10,
       test11, test12, test13, test14, test15, test16, test17, test18, test19, test20, test21,
-      test22, test23, test24, test25, test26
+      test22, test23, test24, test25, test26, test27, test28, test29, test30, test31, test32,
+      test33, test34, test35, test36, test37, test38, test39, test40, test41, test42
     ];
     tests.forEach(function (fn) {
       try {
