@@ -279,15 +279,19 @@
     // Intercompany-Zuordnung unten (siehe intercompanyByCustomerName).
     customerElementName: "Customer",
     // Interne (Konzern-)Kunden erhalten automatisch eine Intercompany-Nummer,
-    // sobald ihr Name (Pfad: Customer -> AddressData -> Name) exakt einem
-    // der folgenden Einträge entspricht. Liste bei Bedarf einfach um weitere
-    // Name/Nummer-Paare ergänzen - der restliche Code muss dafür nicht
-    // angepasst werden.
+    // sobald ihr Name (Pfad: Customer -> AddressData -> Name) - oder eines
+    // seiner mit nameSegmentSeparator getrennten Segmente, siehe
+    // resolveIntercompanyCode - exakt einem der folgenden Einträge
+    // entspricht. Liste bei Bedarf einfach um weitere Name/Nummer-Paare
+    // ergänzen - der restliche Code muss dafür nicht angepasst werden.
     intercompanyByCustomerName: {
       "Galledia Print AG": "3920",
       "Galledia Regionalmedien AG": "3940",
       "galledia group ag": "3910"
     },
+    // MOCO liefert manche Kundennamen zusammengesetzt, z. B.
+    // "Multicolor Print | Galledia Print AG" - Trennzeichen dafür.
+    nameSegmentSeparator: "|",
     // Wie ensureField()/CONFIG.fields oben: fehlt das Feld, wird es direkt
     // nach dem Element mit dem Namen "insertAfterLocalName" eingefügt.
     intercompanyField: { localName: "Intercompany", insertAfterLocalName: "DefaultCurrency" },
@@ -312,6 +316,19 @@
       typeElementName: "PaymentReferenceLineType",
       typeValueRequired: "QR",
       fixedPrefix: "66225"
+    },
+    // Zahlungskondition: fest auf ÜbergabeNr. 5 ("30 Tage netto") kodiert,
+    // für jede Abrechnung sichergestellt. Fehlt das PaymentTerm-Element
+    // komplett, wird es am Ende der Abrechnung neu angelegt; existiert es
+    // bereits, werden nur diese drei Sub-Felder korrigiert/ergänzt - andere
+    // vorhandene Sub-Felder (z. B. DeadlineAsDate) bleiben unangetastet.
+    paymentTerm: {
+      elementName: "PaymentTerm",
+      fields: [
+        { localName: "Number", value: "5" },
+        { localName: "CopyFromTable", value: "true" },
+        { localName: "Type", value: "0" }
+      ]
     }
   };
 
@@ -484,6 +501,14 @@
     });
     assertNoDuplicateOrThrow(documentEl, CONFIG.keyAmountField.localName);
     assertNoDuplicateOrThrow(documentEl, CONFIG.generalLedgerDateField.localName);
+
+    assertNoDuplicateOrThrow(documentEl, CONFIG.paymentTerm.elementName);
+    var paymentTermMatches = getDirectChildrenByLocalName(documentEl, CONFIG.paymentTerm.elementName);
+    if (paymentTermMatches.length === 1) {
+      CONFIG.paymentTerm.fields.forEach(function (field) {
+        assertNoDuplicateOrThrow(paymentTermMatches[0], field.localName);
+      });
+    }
   }
 
   // Ermittelt die im restlichen Dokument verwendete Einrückung, damit neu
@@ -521,20 +546,26 @@
       return "corrected";
     }
 
-    var anchorMatches = getDirectChildrenByLocalName(documentEl, field.insertAfterLocalName);
-    if (anchorMatches.length === 0) {
-      throw new Error(
-        "Die vorgesehene Einfügeposition für '" + field.localName + "' wurde nicht gefunden " +
-        "(erwartetes Bezugselement '" + field.insertAfterLocalName + "' fehlt in dieser Abrechnung)."
-      );
+    // Ohne insertAfterLocalName wird ganz an den Anfang eingefügt (z. B. für
+    // Number als erstes Feld eines frisch angelegten PaymentTerm).
+    var referenceNode;
+    if (field.insertAfterLocalName) {
+      var anchorMatches = getDirectChildrenByLocalName(documentEl, field.insertAfterLocalName);
+      if (anchorMatches.length === 0) {
+        throw new Error(
+          "Die vorgesehene Einfügeposition für '" + field.localName + "' wurde nicht gefunden " +
+          "(erwartetes Bezugselement '" + field.insertAfterLocalName + "' fehlt in dieser Abrechnung)."
+        );
+      }
+      referenceNode = anchorMatches[0].nextSibling;
+    } else {
+      referenceNode = documentEl.firstChild;
     }
-    var anchor = anchorMatches[0];
     var qualifiedName = documentEl.prefix ? documentEl.prefix + ":" + field.localName : field.localName;
     var newEl = documentEl.ownerDocument.createElementNS(documentEl.namespaceURI, qualifiedName);
     newEl.textContent = field.value;
 
     var indent = getChildIndent(documentEl);
-    var referenceNode = anchor.nextSibling;
     documentEl.insertBefore(documentEl.ownerDocument.createTextNode(indent), referenceNode);
     documentEl.insertBefore(newEl, referenceNode);
 
@@ -571,6 +602,47 @@
   function transformInvoiceGeneralLedgerDate(documentEl, generalLedgerDate) {
     var field = CONFIG.generalLedgerDateField;
     return ensureField(documentEl, { localName: field.localName, value: generalLedgerDate, insertAfterLocalName: field.insertAfterLocalName });
+  }
+
+  // Legt PaymentTerm am Ende der Abrechnung neu an, falls es fehlt (siehe
+  // CONFIG.paymentTerm); existiert es bereits, werden nur Number/
+  // CopyFromTable/Type sichergestellt, weitere Sub-Felder (z. B.
+  // DeadlineAsDate) bleiben unangetastet. Eindeutigkeit von PaymentTerm
+  // selbst und seiner Sub-Felder ist bereits durch validateInvoiceStructureOrThrow
+  // sichergestellt (siehe transformInvoiceKeyAmount).
+  function transformInvoicePaymentTerm(documentEl) {
+    var cfg = CONFIG.paymentTerm;
+    var matches = getDirectChildrenByLocalName(documentEl, cfg.elementName);
+    var paymentTermEl;
+    var wasCreated = matches.length === 0;
+
+    if (wasCreated) {
+      var qualifiedName = documentEl.prefix ? documentEl.prefix + ":" + cfg.elementName : cfg.elementName;
+      paymentTermEl = documentEl.ownerDocument.createElementNS(documentEl.namespaceURI, qualifiedName);
+      paymentTermEl.setAttribute("mode", "SAVE");
+      var indent = getChildIndent(documentEl);
+      var trailingWhitespace = documentEl.lastChild && documentEl.lastChild.nodeType === Node.TEXT_NODE ? documentEl.lastChild : null;
+      documentEl.insertBefore(documentEl.ownerDocument.createTextNode(indent), trailingWhitespace);
+      documentEl.insertBefore(paymentTermEl, trailingWhitespace);
+    } else {
+      paymentTermEl = matches[0];
+    }
+
+    var fieldAdded = false;
+    var fieldCorrected = false;
+    cfg.fields.forEach(function (field, index) {
+      var action = ensureField(paymentTermEl, {
+        localName: field.localName,
+        value: field.value,
+        insertAfterLocalName: index > 0 ? cfg.fields[index - 1].localName : null
+      });
+      if (action === "added") fieldAdded = true;
+      if (action === "corrected") fieldCorrected = true;
+    });
+
+    if (wasCreated || fieldAdded) return "added";
+    if (fieldCorrected) return "corrected";
+    return "kept";
   }
 
   /* ======================================================================
@@ -807,18 +879,35 @@
     return getDirectChildTextByLocalName(addressMatches[0], "Name");
   }
 
+  // MOCO liefert manche Namen zusammengesetzt (z. B. "Multicolor Print |
+  // Galledia Print AG", "Steinfels Swiss | Division der Coop") - der Teil
+  // vor bzw. nach dem Trennzeichen kann die eigentliche Konzern-Firma sein.
+  // Daher wird jedes Namens-Segment einzeln gegen die Konfiguration geprüft,
+  // nicht nur der Name als Ganzes.
+  function resolveIntercompanyCode(name) {
+    if (name == null) return null;
+    var segments = name.split(CONFIG.nameSegmentSeparator);
+    for (var i = 0; i < segments.length; i++) {
+      var segment = segments[i].trim();
+      if (Object.prototype.hasOwnProperty.call(CONFIG.intercompanyByCustomerName, segment)) {
+        return CONFIG.intercompanyByCustomerName[segment];
+      }
+    }
+    return null;
+  }
+
   // Rückgabe: "added"/"corrected"/"kept" (siehe ensureField) oder
-  // "notMatched", falls der Kundenname nicht in der Konfiguration vorkommt.
+  // "notMatched", falls kein Namens-Segment in der Konfiguration vorkommt.
   function transformCustomerIntercompany(customerEl) {
-    var name = getCustomerAddressName(customerEl);
-    if (name == null || !Object.prototype.hasOwnProperty.call(CONFIG.intercompanyByCustomerName, name)) {
+    var code = resolveIntercompanyCode(getCustomerAddressName(customerEl));
+    if (code == null) {
       return "notMatched";
     }
     var field = CONFIG.intercompanyField;
     assertNoDuplicateOrThrow(customerEl, field.localName);
     return ensureField(customerEl, {
       localName: field.localName,
-      value: CONFIG.intercompanyByCustomerName[name],
+      value: code,
       insertAfterLocalName: field.insertAfterLocalName
     });
   }
@@ -915,6 +1004,7 @@
       documentNumberStats: { updated: 0, kept: 0, skipped: 0 },
       keyAmountStats: emptyActionStats(),
       generalLedgerDateStats: emptyActionStats(),
+      paymentTermStats: emptyActionStats(),
       paymentReferenceLineStats: { added: 0, kept: 0, corrected: 0, notApplicable: 0 },
       customerCount: 0,
       customerErrorCount: 0,
@@ -964,6 +1054,7 @@
         });
         result.keyAmountStats[transformInvoiceKeyAmount(invoice.documentEl)]++;
         result.generalLedgerDateStats[transformInvoiceGeneralLedgerDate(invoice.documentEl, options.generalLedgerDate)]++;
+        result.paymentTermStats[transformInvoicePaymentTerm(invoice.documentEl)]++;
         invoiceOutcomes.push({
           label: label,
           ok: true,
@@ -1218,6 +1309,8 @@
       result.keyAmountStats.added + " / " + result.keyAmountStats.corrected + " / " + result.keyAmountStats.kept + "</li>";
     html += "<li>'" + CONFIG.generalLedgerDateField.localName + "' ergänzt/korrigiert/bereits korrekt: " +
       result.generalLedgerDateStats.added + " / " + result.generalLedgerDateStats.corrected + " / " + result.generalLedgerDateStats.kept + "</li>";
+    html += "<li>'" + CONFIG.paymentTerm.elementName + "' ergänzt/korrigiert/bereits korrekt: " +
+      result.paymentTermStats.added + " / " + result.paymentTermStats.corrected + " / " + result.paymentTermStats.kept + "</li>";
     html += "</ul>";
 
     if (result.errorCount > 0) {
@@ -1654,6 +1747,7 @@
       ? fieldsXml.paymentOrderProcedureXml
       : ("<" + p + "PaymentOrderProcedure>0</" + p + "PaymentOrderProcedure>");
     var paymentReferenceXml = fieldsXml.paymentReferenceXml != null ? fieldsXml.paymentReferenceXml : "";
+    var paymentTermXml = fieldsXml.paymentTermXml != null ? fieldsXml.paymentTermXml : "";
     return (
       "<" + p + "Document mode=\"SAVE\">" +
       "<" + p + "DocumentCode>R</" + p + "DocumentCode>" +
@@ -1665,6 +1759,7 @@
       "<" + p + "Amount>" + amount + "</" + p + "Amount>" +
       paymentOrderProcedureXml +
       paymentReferenceXml +
+      paymentTermXml +
       "</" + p + "Document>"
     );
   }
@@ -2375,13 +2470,82 @@
       buildOutputFileName("export", "2026-07-31"), "2026-07-31_export_angereichert.xml");
   }
 
+  // --- Tests für PaymentTerm (hart auf ÜbergabeNr. 5 kodiert) und die
+  // zusammengesetzte Namens-Zuordnung bei der Intercompany-Nummer. ---
+
+  function test44(results) {
+    var xml = wrapDocuments([makeDocumentXml({}, { number: "44001" })]);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
+    check(results, "Test 44: PaymentTerm fehlte komplett - neu angelegt (added=1)", r.paymentTermStats.added, 1);
+    var doc = new DOMParser().parseFromString(r.serializedXml, "application/xml");
+    var documentEl = doc.getElementsByTagName("Document")[0];
+    var paymentTermEl = getDirectChildrenByLocalName(documentEl, "PaymentTerm")[0];
+    check(results, "Test 44: PaymentTerm ist das letzte Kindelement der Abrechnung",
+      documentEl.lastElementChild === paymentTermEl, true);
+    check(results, "Test 44: mode=\"SAVE\" gesetzt", paymentTermEl.getAttribute("mode"), "SAVE");
+    check(results, "Test 44: Number=5", getDirectChildTextByLocalName(paymentTermEl, "Number"), "5");
+    check(results, "Test 44: CopyFromTable=true", getDirectChildTextByLocalName(paymentTermEl, "CopyFromTable"), "true");
+    check(results, "Test 44: Type=0", getDirectChildTextByLocalName(paymentTermEl, "Type"), "0");
+  }
+
+  function test45(results) {
+    var xml = wrapDocuments([makeDocumentXml(
+      { paymentTermXml: "<PaymentTerm mode=\"SAVE\"><Number>1</Number><CopyFromTable>false</CopyFromTable><Type>0</Type><DeadlineAsDate>2026-08-31</DeadlineAsDate></PaymentTerm>" },
+      { number: "45001" }
+    )]);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
+    check(results, "Test 45: abweichende Werte werden korrigiert (corrected=1)", r.paymentTermStats.corrected, 1);
+    var doc = new DOMParser().parseFromString(r.serializedXml, "application/xml");
+    var paymentTermEl = doc.getElementsByTagName("PaymentTerm")[0];
+    check(results, "Test 45: Number korrigiert auf 5", getDirectChildTextByLocalName(paymentTermEl, "Number"), "5");
+    check(results, "Test 45: CopyFromTable korrigiert auf true", getDirectChildTextByLocalName(paymentTermEl, "CopyFromTable"), "true");
+    check(results, "Test 45: nicht konfiguriertes DeadlineAsDate bleibt unangetastet",
+      getDirectChildTextByLocalName(paymentTermEl, "DeadlineAsDate"), "2026-08-31");
+  }
+
+  function test46(results) {
+    var xml = wrapDocuments([makeDocumentXml(
+      { paymentTermXml: "<PaymentTerm mode=\"SAVE\"><Number>5</Number><CopyFromTable>true</CopyFromTable><Type>0</Type></PaymentTerm>" },
+      { number: "46001" }
+    )]);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
+    check(results, "Test 46: Werte stimmen bereits überein - kept=1", r.paymentTermStats.kept, 1);
+    check(results, "Test 46: kein unnötiges 'added'", r.paymentTermStats.added, 0);
+  }
+
+  function test47(results) {
+    var xml = wrapDocuments([makeDocumentXml(
+      { paymentTermXml: "<PaymentTerm mode=\"SAVE\"><Number>5</Number></PaymentTerm><PaymentTerm mode=\"SAVE\"><Number>5</Number></PaymentTerm>" },
+      { number: "47001" }
+    )]);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
+    check(results, "Test 47: doppeltes PaymentTerm - Abrechnung wird als Fehler markiert", r.errorCount, 1);
+    check(results, "Test 47: dadurch keine erfolgreich verarbeitete Abrechnung", r.processedCount, 0);
+  }
+
+  function test48(results) {
+    // MOCO liefert manche Kundennamen zusammengesetzt (Zusatz | Firma) - siehe echtes Beispiel
+    // "Multicolor Print | Galledia Print AG" in example/moco-original.xml.
+    var belegeTask = makeBelegeTaskXml([makeDocumentXml({}, { number: "48001" })]);
+    var kundenTask = makeTaskXml("Kunden", [
+      makeCustomerTransactionXml({ customerNumber: "2200024", name: "Multicolor Print | Galledia Print AG" })
+    ]);
+    var xml = wrapTasks([belegeTask, kundenTask]);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
+    check(results, "Test 48: zusammengesetzter Name wird erkannt (added=1)", r.intercompanyStats.added, 1);
+    var doc = new DOMParser().parseFromString(r.serializedXml, "application/xml");
+    var intercompanyEl = doc.getElementsByTagName("Intercompany")[0];
+    check(results, "Test 48: korrektes IC-Code-Segment ('Galledia Print AG') gefunden", intercompanyEl.textContent, "3920");
+  }
+
   function runMocoSelfTests() {
     var results = [];
     var tests = [
       test1, test2, test3, test4, test5, test6, test7, test8, test9, test10,
       test11, test12, test13, test14, test15, test16, test17, test18, test19, test20, test21,
       test22, test23, test24, test25, test26, test27, test28, test29, test30, test31, test32,
-      test33, test34, test35, test36, test37, test38, test39, test40, test41, test42, test43
+      test33, test34, test35, test36, test37, test38, test39, test40, test41, test42, test43,
+      test44, test45, test46, test47, test48
     ];
     tests.forEach(function (fn) {
       try {
