@@ -251,6 +251,9 @@
     taskElementName: "Task",
     // Name des Elements, das eine einzelne Transaktion innerhalb eines Task darstellt
     transactionElementName: "Transaction",
+    // Zählt die Task-Elemente am Wurzelelement - wird nach dem Entfernen von
+    // Dossier-Tasks (siehe removeDossierTaskFromOutput) neu berechnet.
+    taskCountElementName: "TaskCount",
     // Name des Elements, das eine einzelne "Abrechnung" repräsentiert
     // (Pfad: Task -> Transaction -> Document)
     invoiceElementName: "Document",
@@ -328,8 +331,19 @@
         { localName: "Number", value: "5" },
         { localName: "CopyFromTable", value: "true" },
         { localName: "Type", value: "0" }
-      ]
-    }
+      ],
+      // Diese Sub-Felder werden aktiv entfernt, falls vorhanden (nicht nur
+      // unangetastet gelassen wie andere, hier nicht gelistete Sub-Felder).
+      removeFields: ["DeadlineAsDate"]
+    },
+    // Der komplette Dossier-Task (Task -> Transaction -> DocumentDossier ->
+    // Dossier, inkl. PDF-Dateiname-Referenzen) wird aus der ABACUS-
+    // Schnittstelle entfernt - PDF-Rechnungen werden separat geliefert. Die
+    // Belegnummer-Übernahme (siehe applyDossierDocumentNumber) läuft davor
+    // unverändert weiter und bleibt im Code bestehen, falls die Anforderung
+    // sich nochmal ändert. Auf false setzen, um den Dossier-Task wieder mit
+    // auszugeben.
+    removeDossierTaskFromOutput: true
   };
 
   /* ======================================================================
@@ -640,8 +654,13 @@
       if (action === "corrected") fieldCorrected = true;
     });
 
+    var fieldRemoved = false;
+    cfg.removeFields.forEach(function (localName) {
+      if (removeAllChildrenByLocalName(paymentTermEl, localName)) fieldRemoved = true;
+    });
+
     if (wasCreated || fieldAdded) return "added";
-    if (fieldCorrected) return "corrected";
+    if (fieldCorrected || fieldRemoved) return "corrected";
     return "kept";
   }
 
@@ -668,6 +687,39 @@
       }
     }
     return entries;
+  }
+
+  // Entfernt sämtliche Task-Elemente, die (in irgendeiner ihrer Transaktionen)
+  // ein DocumentDossier-Element enthalten, aus der Ausgabedatei - siehe
+  // CONFIG.removeDossierTaskFromOutput. Muss NACH findDossierEntries()/der
+  // Belegnummer-Übernahme laufen, sonst wären die Dossier-Daten dafür schon
+  // weg. Gibt die Anzahl entfernter Task-Elemente zurück.
+  function removeDossierTasks(rootEl) {
+    var tasks = getDirectChildrenByLocalName(rootEl, CONFIG.taskElementName);
+    var removedCount = 0;
+    tasks.forEach(function (taskEl) {
+      var transactions = getDirectChildrenByLocalName(taskEl, CONFIG.transactionElementName);
+      var hasDossier = transactions.some(function (transactionEl) {
+        return getDirectChildrenByLocalName(transactionEl, CONFIG.dossierElementName).length > 0;
+      });
+      if (!hasDossier) return;
+      var previous = taskEl.previousSibling;
+      if (previous && previous.nodeType === Node.TEXT_NODE && previous.textContent.trim() === "") {
+        rootEl.removeChild(previous);
+      }
+      rootEl.removeChild(taskEl);
+      removedCount++;
+    });
+    return removedCount;
+  }
+
+  // Hält CONFIG.taskCountElementName (z. B. <TaskCount>) konsistent mit der
+  // tatsächlichen Anzahl verbliebener Task-Elemente, nachdem removeDossierTasks()
+  // welche entfernt hat. Fehlt/mehrdeutig ist kein Fehler (Feld ist optional).
+  function updateTaskCount(rootEl) {
+    var matches = getDirectChildrenByLocalName(rootEl, CONFIG.taskCountElementName);
+    if (matches.length !== 1) return;
+    matches[0].textContent = String(getDirectChildrenByLocalName(rootEl, CONFIG.taskElementName).length);
   }
 
   // Die Belegnummer sitzt als eigenständiges <Number>-Element direkt im
@@ -701,6 +753,22 @@
     }
     oldEl.parentNode.replaceChild(newEl, oldEl);
     return newEl;
+  }
+
+  // Entfernt ALLE direkten Kindelemente von "el" mit dem Namen "localName",
+  // jeweils samt ihrem vorangehenden reinen Einrückungs-Textknoten (falls
+  // vorhanden), damit keine leeren Zeilen zurückbleiben. Gibt zurück, ob
+  // überhaupt etwas entfernt wurde.
+  function removeAllChildrenByLocalName(el, localName) {
+    var matches = getDirectChildrenByLocalName(el, localName);
+    matches.forEach(function (target) {
+      var previous = target.previousSibling;
+      if (previous && previous.nodeType === Node.TEXT_NODE && previous.textContent.trim() === "") {
+        el.removeChild(previous);
+      }
+      el.removeChild(target);
+    });
+    return matches.length > 0;
   }
 
   function transformDossierEntry(dossierEl) {
@@ -1001,6 +1069,7 @@
       dossierRenamedCount: 0,
       dossierAlreadyRenamedCount: 0,
       dossierErrors: [],
+      removedDossierTaskCount: 0,
       documentNumberStats: { updated: 0, kept: 0, skipped: 0 },
       keyAmountStats: emptyActionStats(),
       generalLedgerDateStats: emptyActionStats(),
@@ -1138,6 +1207,13 @@
       mergeInto(fields, dossierByBelegNumber[outcome.originalNumber]);
       result.invoiceResults.push({ label: outcome.label, ok: true, actions: outcome.actions, fields: fields });
     });
+
+    if (CONFIG.removeDossierTaskFromOutput) {
+      result.removedDossierTaskCount = removeDossierTasks(root);
+      if (result.removedDossierTaskCount > 0) {
+        updateTaskCount(root);
+      }
+    }
 
     result.serializedXml = serializeDocument(doc, xmlText);
     return result;
@@ -1348,6 +1424,12 @@
       html += "<li>Document-Number aktualisiert: " + result.documentNumberStats.updated + "</li>";
       html += "<li>Bereits korrekt vorhanden: " + result.documentNumberStats.kept + "</li>";
       html += "<li>Kein passender Dossier-Eintrag gefunden: " + result.documentNumberStats.skipped + "</li>";
+      html += "</ul>";
+    }
+
+    if (result.removedDossierTaskCount > 0) {
+      html += "<h3>Dossier-Task aus Ausgabedatei entfernt</h3><ul>";
+      html += "<li>Entfernte Task-Elemente (PDF-Referenzen, DocumentDossier/Dossier): " + result.removedDossierTaskCount + "</li>";
       html += "</ul>";
     }
 
@@ -2098,7 +2180,18 @@
     var dossierTx = makeDossierTransactionXml({ belegNumber: "17001", innerFieldXml: "<DocumentName>TR900001</DocumentName>" });
     var dossierTask = makeTaskXml("BelegDossier", [dossierTx]);
     var xml = wrapTasks([belegeTask, dossierTask]);
-    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
+    // CONFIG.removeDossierTaskFromOutput entfernt den Dossier-Task normalerweise aus
+    // der Ausgabedatei (siehe test50/51) - hier wird die eigentliche Umbenennung
+    // selbst geprüft, dafür kurzzeitig deaktiviert (bleibt im Code nutzbar, siehe
+    // CONFIG-Kommentar).
+    var originalFlag = CONFIG.removeDossierTaskFromOutput;
+    CONFIG.removeDossierTaskFromOutput = false;
+    var r;
+    try {
+      r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
+    } finally {
+      CONFIG.removeDossierTaskFromOutput = originalFlag;
+    }
     check(results, "Test 17: ein Dossier-Eintrag gefunden", r.dossierCount, 1);
     check(results, "Test 17: DocumentName wird zu Number umbenannt", r.dossierRenamedCount, 1);
 
@@ -2120,7 +2213,16 @@
     });
     var dossierTask = makeTaskXml("BelegDossier", dossierTxs);
     var xml = wrapTasks([belegeTask, dossierTask]);
-    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
+    // Siehe test17: Dossier-Task-Entfernung kurzzeitig deaktiviert, um die
+    // Umbenennung selbst am Ergebnis-XML prüfen zu können.
+    var originalFlag = CONFIG.removeDossierTaskFromOutput;
+    CONFIG.removeDossierTaskFromOutput = false;
+    var r;
+    try {
+      r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
+    } finally {
+      CONFIG.removeDossierTaskFromOutput = originalFlag;
+    }
     check(results, "Test 18: 3 Dossier-Einträge gefunden", r.dossierCount, 3);
     check(results, "Test 18: alle 3 umbenannt (nicht nur der erste)", r.dossierRenamedCount, 3);
     check(results, "Test 18: keine Fehler", r.dossierErrorCount, 0);
@@ -2139,7 +2241,16 @@
     var dossierTx = makeDossierTransactionXml({ belegNumber: "19001", innerFieldXml: "<Number>ALREADY123</Number>" });
     var dossierTask = makeTaskXml("BelegDossier", [dossierTx]);
     var xml = wrapTasks([belegeTask, dossierTask]);
-    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
+    // Siehe test17: Dossier-Task-Entfernung kurzzeitig deaktiviert, um die
+    // Umbenennung selbst am Ergebnis-XML prüfen zu können.
+    var originalFlag = CONFIG.removeDossierTaskFromOutput;
+    CONFIG.removeDossierTaskFromOutput = false;
+    var r;
+    try {
+      r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
+    } finally {
+      CONFIG.removeDossierTaskFromOutput = originalFlag;
+    }
     check(results, "Test 19: bereits umbenannt - kein erneutes Umbenennen (renamedCount=0)", r.dossierRenamedCount, 0);
     check(results, "Test 19: bereits umbenannt - trotzdem als verarbeitet gezählt", r.dossierProcessedCount, 1);
 
@@ -2499,8 +2610,7 @@
     var paymentTermEl = doc.getElementsByTagName("PaymentTerm")[0];
     check(results, "Test 45: Number korrigiert auf 5", getDirectChildTextByLocalName(paymentTermEl, "Number"), "5");
     check(results, "Test 45: CopyFromTable korrigiert auf true", getDirectChildTextByLocalName(paymentTermEl, "CopyFromTable"), "true");
-    check(results, "Test 45: nicht konfiguriertes DeadlineAsDate bleibt unangetastet",
-      getDirectChildTextByLocalName(paymentTermEl, "DeadlineAsDate"), "2026-08-31");
+    check(results, "Test 45: DeadlineAsDate aktiv entfernt", getDirectChildrenByLocalName(paymentTermEl, "DeadlineAsDate").length, 0);
   }
 
   function test46(results) {
@@ -2538,6 +2648,59 @@
     check(results, "Test 48: korrektes IC-Code-Segment ('Galledia Print AG') gefunden", intercompanyEl.textContent, "3920");
   }
 
+  function test49(results) {
+    // Nur DeadlineAsDate falsch (Rest bereits korrekt) - muss trotzdem als corrected zählen.
+    var xml = wrapDocuments([makeDocumentXml(
+      { paymentTermXml: "<PaymentTerm mode=\"SAVE\"><Number>5</Number><CopyFromTable>true</CopyFromTable><Type>0</Type><DeadlineAsDate>2026-08-31</DeadlineAsDate></PaymentTerm>" },
+      { number: "49001" }
+    )]);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
+    check(results, "Test 49: reines Entfernen von DeadlineAsDate zählt als corrected", r.paymentTermStats.corrected, 1);
+    var doc = new DOMParser().parseFromString(r.serializedXml, "application/xml");
+    check(results, "Test 49: DeadlineAsDate ist weg", doc.getElementsByTagName("DeadlineAsDate").length, 0);
+  }
+
+  // --- Tests für das Entfernen des kompletten Dossier-Tasks aus der Ausgabedatei
+  // (CONFIG.removeDossierTaskFromOutput) - die Belegnummer-Übernahme selbst bleibt aktiv. ---
+
+  function test50(results) {
+    var belegeTask = makeBelegeTaskXml([makeDocumentXml({}, { number: "50001" })]);
+    var dossierTx = makeDossierTransactionXml({ belegNumber: "50001", innerFieldXml: "<DocumentName>5902599</DocumentName>" });
+    var dossierTask = makeTaskXml("BelegDossier", [dossierTx]);
+    var xml = wrapTasks([belegeTask, dossierTask]);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
+    check(results, "Test 50: Belegnummer wurde trotzdem aus dem Dossier übernommen", r.documentNumberStats.updated, 1);
+    check(results, "Test 50: 1 Dossier-Task entfernt", r.removedDossierTaskCount, 1);
+
+    var doc = new DOMParser().parseFromString(r.serializedXml, "application/xml");
+    check(results, "Test 50: kein DocumentDossier mehr in der Ausgabedatei", doc.getElementsByTagName("DocumentDossier").length, 0);
+    var numberEl = getDirectChildrenByLocalName(doc.getElementsByTagName("Document")[0], "Number")[0];
+    check(results, "Test 50: Document->Number zeigt trotzdem die übernommene Belegnummer", numberEl.textContent, "5902599");
+  }
+
+  function test51(results) {
+    var belegeTask = makeBelegeTaskXml([makeDocumentXml({}, { number: "51001" })]);
+    var dossierTask = makeTaskXml("BelegDossier", [makeDossierTransactionXml({ belegNumber: "51001" })]);
+    var xml = wrapTasks([belegeTask, dossierTask]);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
+    var doc = new DOMParser().parseFromString(r.serializedXml, "application/xml");
+    var taskCountEl = getDirectChildrenByLocalName(doc.documentElement, "TaskCount")[0];
+    check(results, "Test 51: TaskCount nach Entfernen des Dossier-Tasks korrekt auf 1 angepasst", taskCountEl.textContent, "1");
+    check(results, "Test 51: tatsächlich nur noch 1 Task-Element vorhanden", doc.getElementsByTagName("Task").length, 1);
+  }
+
+  function test52(results) {
+    // Abrechnungsliste (XLS) darf weiterhin Dossier-Infos zeigen, obwohl der
+    // Task selbst nicht mehr im XML-Output landet.
+    var belegeTask = makeBelegeTaskXml([makeDocumentXml({}, { number: "52001" })]);
+    var dossierTx = makeDossierTransactionXml({ belegNumber: "52001", innerFieldXml: "<DocumentName>5902577</DocumentName>" });
+    var dossierTask = makeTaskXml("BelegDossier", [dossierTx]);
+    var xml = wrapTasks([belegeTask, dossierTask]);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
+    check(results, "Test 52: Abrechnungsliste enthält weiterhin die Dossier-Filename-Spalte",
+      r.invoiceResults[0].fields["DocumentDossier.Dossier.Filename"], "test.pdf");
+  }
+
   function runMocoSelfTests() {
     var results = [];
     var tests = [
@@ -2545,7 +2708,7 @@
       test11, test12, test13, test14, test15, test16, test17, test18, test19, test20, test21,
       test22, test23, test24, test25, test26, test27, test28, test29, test30, test31, test32,
       test33, test34, test35, test36, test37, test38, test39, test40, test41, test42, test43,
-      test44, test45, test46, test47, test48
+      test44, test45, test46, test47, test48, test49, test50, test51, test52
     ];
     tests.forEach(function (fn) {
       try {
