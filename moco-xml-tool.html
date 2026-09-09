@@ -307,13 +307,14 @@
     generalLedgerDateField: { localName: "GeneralLedgerDate", insertAfterLocalName: "AccountReceivableDate" },
     // QR-Referenzzeile: 27-stellige Zahl aus einem fixen, 5-stelligen
     // Kreditor-Präfix (an das konkrete QR-IBAN-Konto gebunden - bei
-    // Kontowechsel hier anpassen), gefolgt von der Belegnummer (rechtsbündig
-    // mit Nullen auf die verbleibenden Stellen aufgefüllt) und einer
-    // rekursiven Modulo-10-Prüfziffer (siehe mod10RecursiveCheckDigit,
+    // Kontowechsel hier anpassen), gefolgt von Document->Reference
+    // (rechtsbündig mit Nullen auf die verbleibenden Stellen aufgefüllt) und
+    // einer rekursiven Modulo-10-Prüfziffer (siehe mod10RecursiveCheckDigit,
     // identischer Algorithmus wie beim klassischen Schweizer ESR-
-    // Einzahlungsschein). Wird NACH der Übernahme der Belegnummer aus dem
-    // Dossier (siehe oben) neu berechnet, damit die Referenz zur finalen
-    // (externen) Belegnummer passt.
+    // Einzahlungsschein). Bewusst Reference statt Number als Basis, da
+    // Number durch die Belegnummer-Übernahme aus dem Dossier (siehe oben)
+    // auf die externe MOCO-Nummer überschrieben werden kann - Reference
+    // bleibt die stabile ABACUS-eigene Belegnummer.
     paymentReferenceLine: {
       elementName: "PaymentReferenceLine",
       typeElementName: "PaymentReferenceLineType",
@@ -849,11 +850,14 @@
   /* ======================================================================
    * QR-REFERENZZEILE (PaymentReferenceLine) NEU BERECHNEN
    * ----------------------------------------------------------------------
-   * Muss NACH applyDossierDocumentNumber laufen, damit die Referenz auf der
-   * finalen (ggf. aus dem Dossier übernommenen) Belegnummer basiert - siehe
-   * CONFIG.paymentReferenceLine für den Aufbau (Präfix + Belegnummer +
-   * Modulo-10-Prüfziffer). Rekursive Modulo-10-Tabelle wie beim klassischen
-   * Schweizer ESR-Einzahlungsschein (ISO/IEC 7064 MOD 10).
+   * Basiswert ist Document->Reference (die stabile, ABACUS-eigene
+   * Belegnummer) - NICHT Document->Number, das per applyDossierDocumentNumber
+   * auf die externe MOCO-Belegnummer überschrieben werden kann. Reference
+   * bleibt davon unberührt, daher spielt die Reihenfolge zur Dossier-
+   * Übernahme hier keine Rolle mehr; der Schritt läuft trotzdem erst danach,
+   * siehe Aufrufstelle. Aufbau (Präfix + Reference + Modulo-10-Prüfziffer)
+   * siehe CONFIG.paymentReferenceLine. Rekursive Modulo-10-Tabelle wie beim
+   * klassischen Schweizer ESR-Einzahlungsschein (ISO/IEC 7064 MOD 10).
    * ====================================================================== */
   var MOD10_RECURSIVE_TABLE = [
     [0, 9, 4, 6, 8, 2, 7, 1, 3, 5],
@@ -876,17 +880,17 @@
     return (10 - carry) % 10;
   }
 
-  function buildPaymentReferenceLine(documentNumber) {
+  function buildPaymentReferenceLine(referenceNumber) {
     var prefix = CONFIG.paymentReferenceLine.fixedPrefix;
     var bodyWidth = 26 - prefix.length;
-    if (!/^\d+$/.test(documentNumber) || documentNumber.length > bodyWidth) {
+    if (!/^\d+$/.test(referenceNumber) || referenceNumber.length > bodyWidth) {
       throw new Error(
-        "Die Belegnummer '" + documentNumber + "' ist für die Berechnung der '" +
+        "Der Basiswert '" + referenceNumber + "' ist für die Berechnung der '" +
         CONFIG.paymentReferenceLine.elementName + "' ungültig (muss numerisch und höchstens " +
         bodyWidth + " Stellen lang sein)."
       );
     }
-    var body = prefix + documentNumber.padStart(bodyWidth, "0");
+    var body = prefix + referenceNumber.padStart(bodyWidth, "0");
     return body + String(mod10RecursiveCheckDigit(body));
   }
 
@@ -897,10 +901,10 @@
     var cfg = CONFIG.paymentReferenceLine;
     var typeValue = getDirectChildTextByLocalName(documentEl, cfg.typeElementName);
     if (typeValue !== cfg.typeValueRequired) return "notApplicable";
-    var numberValue = getDirectChildTextByLocalName(documentEl, "Number");
-    if (!numberValue) return "notApplicable";
+    var referenceValue = getDirectChildTextByLocalName(documentEl, "Reference");
+    if (!referenceValue) return "notApplicable";
     assertNoDuplicateOrThrow(documentEl, cfg.elementName);
-    var newValue = buildPaymentReferenceLine(numberValue);
+    var newValue = buildPaymentReferenceLine(referenceValue);
     return ensureField(documentEl, { localName: cfg.elementName, value: newValue, insertAfterLocalName: cfg.typeElementName });
   }
 
@@ -1818,6 +1822,7 @@
     opts = opts || {};
     var p = opts.prefix ? opts.prefix + ":" : "";
     var number = opts.number || "0";
+    var reference = opts.reference != null ? opts.reference : number;
     var customerNumber = opts.customerNumber != null ? opts.customerNumber : "210102";
     var amount = opts.amount != null ? opts.amount : "100.0";
     var text = opts.text || "Testrechnung";
@@ -1836,6 +1841,7 @@
       "<" + p + "CustomerNumber>" + customerNumber + "</" + p + "CustomerNumber>" +
       divisionXml +
       "<" + p + "Number>" + number + "</" + p + "Number>" +
+      "<" + p + "Reference>" + reference + "</" + p + "Reference>" +
       "<" + p + "Text>" + text + "</" + p + "Text>" +
       accountReceivableDateXml +
       "<" + p + "Amount>" + amount + "</" + p + "Amount>" +
@@ -2533,26 +2539,28 @@
   }
 
   function test40(results) {
-    // Bekannter echter Beleg aus der Referenzdatei: Number 8265389 -> PaymentReferenceLine 662250000000000000082653890.
+    // Bekannter echter Beleg aus der Referenzdatei: Reference 8265389 -> PaymentReferenceLine 662250000000000000082653890.
+    // Number bewusst abweichend gesetzt, um zu beweisen, dass NICHT Number als Basis dient.
     var docXml = makeDocumentXml(
       { paymentReferenceXml: "<PaymentReferenceLineType>QR</PaymentReferenceLineType>" },
-      { number: "8265389" }
+      { number: "999999", reference: "8265389" }
     );
     var xml = wrapDocuments([docXml]);
     var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
     check(results, "Test 40: PaymentReferenceLine neu ergänzt (added=1)", r.paymentReferenceLineStats.added, 1);
     var doc = new DOMParser().parseFromString(r.serializedXml, "application/xml");
     var el = doc.getElementsByTagName("PaymentReferenceLine")[0];
-    check(results, "Test 40: berechneter Wert entspricht dem echten Referenzbeleg", el.textContent, "662250000000000000082653890");
+    check(results, "Test 40: berechneter Wert basiert auf Reference, entspricht dem echten Referenzbeleg", el.textContent, "662250000000000000082653890");
     check(results, "Test 40: buildPaymentReferenceLine() liefert denselben Wert", buildPaymentReferenceLine("8265389"), "662250000000000000082653890");
   }
 
   function test41(results) {
-    // Integrationstest: die PaymentReferenceLine muss auf der FINALEN Belegnummer
-    // basieren, also erst NACH der Übernahme der Belegnummer aus dem Dossier berechnet werden.
+    // Integrationstest: die PaymentReferenceLine muss auf der stabilen Reference
+    // basieren, NICHT auf Number, das durch die Belegnummer-Übernahme aus dem
+    // Dossier überschrieben wird.
     var belegeTask = makeBelegeTaskXml([makeDocumentXml(
       { paymentReferenceXml: "<PaymentReferenceLineType>QR</PaymentReferenceLineType>" },
-      { number: "41001" }
+      { number: "41001", reference: "8496085" }
     )]);
     var dossierTx = makeDossierTransactionXml({ belegNumber: "41001", innerFieldXml: "<DocumentName>5902522</DocumentName>" });
     var dossierTask = makeTaskXml("BelegDossier", [dossierTx]);
@@ -2561,8 +2569,10 @@
     check(results, "Test 41: Belegnummer aus Dossier übernommen", r.documentNumberStats.updated, 1);
     check(results, "Test 41: PaymentReferenceLine ergänzt", r.paymentReferenceLineStats.added, 1);
     var doc = new DOMParser().parseFromString(r.serializedXml, "application/xml");
+    var numberEl = getDirectChildrenByLocalName(doc.getElementsByTagName("Document")[0], "Number")[0];
+    check(results, "Test 41: Document->Number zeigt die neue Dossier-Nummer", numberEl.textContent, "5902522");
     var el = doc.getElementsByTagName("PaymentReferenceLine")[0];
-    check(results, "Test 41: PaymentReferenceLine basiert auf der NEUEN (Dossier-)Nummer, nicht der alten", el.textContent, buildPaymentReferenceLine("5902522"));
+    check(results, "Test 41: PaymentReferenceLine basiert weiterhin auf der unveränderten Reference, nicht auf der neuen Number", el.textContent, buildPaymentReferenceLine("8496085"));
   }
 
   function test42(results) {
