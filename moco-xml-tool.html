@@ -305,6 +305,10 @@
     // Wert wird daher einmal pro Verarbeitungslauf im Formular gewählt
     // (siehe generalLedgerDateInput) und gilt für alle Abrechnungen der Datei.
     generalLedgerDateField: { localName: "GeneralLedgerDate", insertAfterLocalName: "AccountReceivableDate" },
+    // TaxDateValidFrom (pro LineItem): muss laut Abacus/Marion exakt dasselbe
+    // Datum wie GeneralLedgerDate (Fibu-Datum) tragen - AccountReceivableDate
+    // (das ursprüngliche Rechnungsdatum) bleibt davon unberührt.
+    taxDateValidFromField: { localName: "TaxDateValidFrom", insertAfterLocalName: "TaxIncluded" },
     // QR-Referenzzeile: 27-stellige Zahl aus einem fixen, 5-stelligen
     // Kreditor-Präfix (an das konkrete QR-IBAN-Konto gebunden - bei
     // Kontowechsel hier anpassen), gefolgt von Document->Reference
@@ -517,6 +521,10 @@
     assertNoDuplicateOrThrow(documentEl, CONFIG.keyAmountField.localName);
     assertNoDuplicateOrThrow(documentEl, CONFIG.generalLedgerDateField.localName);
 
+    getDirectChildrenByLocalName(documentEl, "LineItem").forEach(function (lineItemEl) {
+      assertNoDuplicateOrThrow(lineItemEl, CONFIG.taxDateValidFromField.localName);
+    });
+
     assertNoDuplicateOrThrow(documentEl, CONFIG.paymentTerm.elementName);
     var paymentTermMatches = getDirectChildrenByLocalName(documentEl, CONFIG.paymentTerm.elementName);
     if (paymentTermMatches.length === 1) {
@@ -617,6 +625,22 @@
   function transformInvoiceGeneralLedgerDate(documentEl, generalLedgerDate) {
     var field = CONFIG.generalLedgerDateField;
     return ensureField(documentEl, { localName: field.localName, value: generalLedgerDate, insertAfterLocalName: field.insertAfterLocalName });
+  }
+
+  // Setzt TaxDateValidFrom in JEDEM LineItem der Abrechnung auf denselben Wert
+  // wie GeneralLedgerDate (siehe CONFIG.taxDateValidFromField). Eine Abrechnung
+  // ohne LineItem ist kein Fehler (dann gibt es nichts zu setzen - "kept").
+  // AccountReceivableDate wird hiervon nicht berührt. Eindeutigkeit von
+  // TaxDateValidFrom je LineItem ist bereits durch validateInvoiceStructureOrThrow
+  // sichergestellt.
+  function transformInvoiceTaxDateValidFrom(documentEl, generalLedgerDate) {
+    var field = CONFIG.taxDateValidFromField;
+    var actions = getDirectChildrenByLocalName(documentEl, "LineItem").map(function (lineItemEl) {
+      return ensureField(lineItemEl, { localName: field.localName, value: generalLedgerDate, insertAfterLocalName: field.insertAfterLocalName });
+    });
+    if (actions.indexOf("added") !== -1) return "added";
+    if (actions.indexOf("corrected") !== -1) return "corrected";
+    return "kept";
   }
 
   // Legt PaymentTerm am Ende der Abrechnung neu an, falls es fehlt (siehe
@@ -1077,6 +1101,7 @@
       documentNumberStats: { updated: 0, kept: 0, skipped: 0 },
       keyAmountStats: emptyActionStats(),
       generalLedgerDateStats: emptyActionStats(),
+      taxDateValidFromStats: emptyActionStats(),
       paymentTermStats: emptyActionStats(),
       paymentReferenceLineStats: { added: 0, kept: 0, corrected: 0, notApplicable: 0 },
       customerCount: 0,
@@ -1127,6 +1152,7 @@
         });
         result.keyAmountStats[transformInvoiceKeyAmount(invoice.documentEl)]++;
         result.generalLedgerDateStats[transformInvoiceGeneralLedgerDate(invoice.documentEl, options.generalLedgerDate)]++;
+        result.taxDateValidFromStats[transformInvoiceTaxDateValidFrom(invoice.documentEl, options.generalLedgerDate)]++;
         result.paymentTermStats[transformInvoicePaymentTerm(invoice.documentEl)]++;
         invoiceOutcomes.push({
           label: label,
@@ -1389,6 +1415,8 @@
       result.keyAmountStats.added + " / " + result.keyAmountStats.corrected + " / " + result.keyAmountStats.kept + "</li>";
     html += "<li>'" + CONFIG.generalLedgerDateField.localName + "' ergänzt/korrigiert/bereits korrekt: " +
       result.generalLedgerDateStats.added + " / " + result.generalLedgerDateStats.corrected + " / " + result.generalLedgerDateStats.kept + "</li>";
+    html += "<li>'" + CONFIG.taxDateValidFromField.localName + "' ergänzt/korrigiert/bereits korrekt: " +
+      result.taxDateValidFromStats.added + " / " + result.taxDateValidFromStats.corrected + " / " + result.taxDateValidFromStats.kept + "</li>";
     html += "<li>'" + CONFIG.paymentTerm.elementName + "' ergänzt/korrigiert/bereits korrekt: " +
       result.paymentTermStats.added + " / " + result.paymentTermStats.corrected + " / " + result.paymentTermStats.kept + "</li>";
     html += "</ul>";
@@ -1834,6 +1862,7 @@
       ? fieldsXml.paymentOrderProcedureXml
       : ("<" + p + "PaymentOrderProcedure>0</" + p + "PaymentOrderProcedure>");
     var paymentReferenceXml = fieldsXml.paymentReferenceXml != null ? fieldsXml.paymentReferenceXml : "";
+    var lineItemXml = fieldsXml.lineItemXml != null ? fieldsXml.lineItemXml : "";
     var paymentTermXml = fieldsXml.paymentTermXml != null ? fieldsXml.paymentTermXml : "";
     return (
       "<" + p + "Document mode=\"SAVE\">" +
@@ -1847,8 +1876,30 @@
       "<" + p + "Amount>" + amount + "</" + p + "Amount>" +
       paymentOrderProcedureXml +
       paymentReferenceXml +
+      lineItemXml +
       paymentTermXml +
       "</" + p + "Document>"
+    );
+  }
+
+  // Baut ein einzelnes LineItem-XML (Prefix-fähig, siehe makeDocumentXml) für
+  // Tests rund um TaxDateValidFrom - taxDateValidFromXml leer lassen, um das
+  // Feld ganz wegzulassen (Test für "wird ergänzt").
+  function makeLineItemXml(opts) {
+    opts = opts || {};
+    var p = opts.prefix ? opts.prefix + ":" : "";
+    var taxDateValidFromXml = opts.taxDateValidFrom != null
+      ? ("<" + p + "TaxDateValidFrom>" + opts.taxDateValidFrom + "</" + p + "TaxDateValidFrom>")
+      : "";
+    return (
+      "<" + p + "LineItem mode=\"SAVE\">" +
+      "<" + p + "Number>" + (opts.number || "1") + "</" + p + "Number>" +
+      "<" + p + "Amount>" + (opts.amount || "100.0") + "</" + p + "Amount>" +
+      "<" + p + "TaxMethod>1</" + p + "TaxMethod>" +
+      "<" + p + "TaxCode>510</" + p + "TaxCode>" +
+      "<" + p + "TaxIncluded>2</" + p + "TaxIncluded>" +
+      taxDateValidFromXml +
+      "</" + p + "LineItem>"
     );
   }
 
@@ -2711,6 +2762,68 @@
       r.invoiceResults[0].fields["DocumentDossier.Dossier.Filename"], "test.pdf");
   }
 
+  // --- Tests für TaxDateValidFrom pro LineItem: muss exakt GeneralLedgerDate
+  // (Fibu-Datum) entsprechen; AccountReceivableDate bleibt unangetastet. ---
+
+  function test53(results) {
+    var xml = wrapDocuments([makeDocumentXml(
+      { lineItemXml: makeLineItemXml({}) },
+      { number: "53001" }
+    )]);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
+    check(results, "Test 53: TaxDateValidFrom fehlte - neu ergänzt (added=1)", r.taxDateValidFromStats.added, 1);
+    var doc = new DOMParser().parseFromString(r.serializedXml, "application/xml");
+    var lineItemEl = doc.getElementsByTagName("LineItem")[0];
+    check(results, "Test 53: TaxDateValidFrom = Fibu-Datum", getDirectChildTextByLocalName(lineItemEl, "TaxDateValidFrom"), TEST_GENERAL_LEDGER_DATE);
+    var documentEl = doc.getElementsByTagName("Document")[0];
+    check(results, "Test 53: AccountReceivableDate bleibt das ursprüngliche Rechnungsdatum",
+      getDirectChildTextByLocalName(documentEl, "AccountReceivableDate"), "2026-08-01");
+  }
+
+  function test54(results) {
+    var xml = wrapDocuments([makeDocumentXml(
+      { lineItemXml: makeLineItemXml({ taxDateValidFrom: "2026-06-19" }) },
+      { number: "54001" }
+    )]);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
+    check(results, "Test 54: abweichendes TaxDateValidFrom wird korrigiert (corrected=1)", r.taxDateValidFromStats.corrected, 1);
+    var doc = new DOMParser().parseFromString(r.serializedXml, "application/xml");
+    var lineItemEl = doc.getElementsByTagName("LineItem")[0];
+    check(results, "Test 54: TaxDateValidFrom auf Fibu-Datum korrigiert",
+      getDirectChildTextByLocalName(lineItemEl, "TaxDateValidFrom"), TEST_GENERAL_LEDGER_DATE);
+  }
+
+  function test55(results) {
+    var xml = wrapDocuments([makeDocumentXml(
+      { lineItemXml: makeLineItemXml({ taxDateValidFrom: TEST_GENERAL_LEDGER_DATE }) },
+      { number: "55001" }
+    )]);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
+    check(results, "Test 55: TaxDateValidFrom stimmt bereits überein - kept=1", r.taxDateValidFromStats.kept, 1);
+    check(results, "Test 55: kein unnötiges 'added'", r.taxDateValidFromStats.added, 0);
+  }
+
+  function test56(results) {
+    // Zwei LineItems: eines fehlt komplett, eines stimmt schon - insgesamt
+    // muss das als "added" durchschlagen (nicht als "kept" untergehen).
+    var xml = wrapDocuments([makeDocumentXml(
+      {
+        lineItemXml:
+          makeLineItemXml({ number: "1", taxDateValidFrom: TEST_GENERAL_LEDGER_DATE }) +
+          makeLineItemXml({ number: "2" })
+      },
+      { number: "56001" }
+    )]);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
+    check(results, "Test 56: zweites LineItem ergänzt schlägt als added=1 durch", r.taxDateValidFromStats.added, 1);
+    var doc = new DOMParser().parseFromString(r.serializedXml, "application/xml");
+    var lineItems = doc.getElementsByTagName("LineItem");
+    check(results, "Test 56: beide LineItems tragen das Fibu-Datum", [
+      getDirectChildTextByLocalName(lineItems[0], "TaxDateValidFrom"),
+      getDirectChildTextByLocalName(lineItems[1], "TaxDateValidFrom")
+    ], [TEST_GENERAL_LEDGER_DATE, TEST_GENERAL_LEDGER_DATE]);
+  }
+
   function runMocoSelfTests() {
     var results = [];
     var tests = [
@@ -2718,7 +2831,8 @@
       test11, test12, test13, test14, test15, test16, test17, test18, test19, test20, test21,
       test22, test23, test24, test25, test26, test27, test28, test29, test30, test31, test32,
       test33, test34, test35, test36, test37, test38, test39, test40, test41, test42, test43,
-      test44, test45, test46, test47, test48, test49, test50, test51, test52
+      test44, test45, test46, test47, test48, test49, test50, test51, test52,
+      test53, test54, test55, test56
     ];
     tests.forEach(function (fn) {
       try {
