@@ -102,6 +102,9 @@
     color: var(--color-muted);
     min-height: 1.2em;
   }
+  .filename.error {
+    color: var(--color-error-text);
+  }
   .privacy-note {
     font-size: 0.85rem;
     color: var(--color-muted);
@@ -209,6 +212,12 @@
       <input type="date" id="generalLedgerDateInput">
     </div>
 
+    <div class="field">
+      <label for="customerExportInput">MOCO-Kundenexport (.xlsx, optional - ergänzt die E-Mail-Adressen für den Mahnungsversand)</label>
+      <input type="file" id="customerExportInput" accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet">
+      <div id="customerExportStatus" class="filename"></div>
+    </div>
+
     <div class="actions">
       <button id="enrichBtn" type="button" disabled>XML anreichern</button>
       <button id="downloadBtn" type="button" disabled>Ergebnis herunterladen</button>
@@ -298,6 +307,18 @@
     // Wie ensureField()/CONFIG.fields oben: fehlt das Feld, wird es direkt
     // nach dem Element mit dem Namen "insertAfterLocalName" eingefügt.
     intercompanyField: { localName: "Intercompany", insertAfterLocalName: "DefaultCurrency" },
+    // E-Mail-Adresse für den Mahnungsversand per E-Mail: MOCO liefert sie
+    // nicht im XML-Export mit, sie stammt aus dem optional zusätzlich
+    // hochgeladenen MOCO-Kundenexport (.xlsx, siehe buildCustomerEmailLookup).
+    // Zuordnung über die Kundennummer (Customer -> CustomerNumber <-> Spalte
+    // exportNumberColumn). Fehlt das Feld, wird es als letztes Element in
+    // Customer -> AddressData angelegt; ein abweichender Wert wird korrigiert.
+    customerEmail: {
+      parentLocalName: "AddressData",
+      localName: "Email",
+      exportNumberColumn: "Kundennummer",
+      exportEmailColumn: "E-Mail"
+    },
     // KeyAmount ist ein reines Kontroll-Duplikat von Amount (dasselbe Muster
     // existiert in jedem LineItem bereits für TaxAmount -> KeyTaxAmount).
     keyAmountField: { localName: "KeyAmount", insertAfterLocalName: "Amount" },
@@ -361,7 +382,10 @@
     outputFileName: null,
     // Alle Feldinformationen der erfolgreich verarbeiteten Abrechnungen aus
     // dem letzten Verarbeitungslauf, für die Abrechnungsliste (XLS-Export).
-    invoiceRows: []
+    invoiceRows: [],
+    // Kundennummer -> E-Mail aus dem optionalen MOCO-Kundenexport (null =
+    // kein Kundenexport geladen, siehe CONFIG.customerEmail).
+    emailsByCustomerNumber: null
   };
 
   /* ======================================================================
@@ -643,6 +667,18 @@
     return "kept";
   }
 
+  // Hängt ein neues, leeres Element als letztes Kind an - vor dem
+  // abschliessenden Whitespace, damit die Einrückung der Datei erhalten bleibt.
+  function appendChildElement(parentEl, localName) {
+    var qualifiedName = parentEl.prefix ? parentEl.prefix + ":" + localName : localName;
+    var newEl = parentEl.ownerDocument.createElementNS(parentEl.namespaceURI, qualifiedName);
+    var indent = getChildIndent(parentEl);
+    var trailingWhitespace = parentEl.lastChild && parentEl.lastChild.nodeType === Node.TEXT_NODE ? parentEl.lastChild : null;
+    parentEl.insertBefore(parentEl.ownerDocument.createTextNode(indent), trailingWhitespace);
+    parentEl.insertBefore(newEl, trailingWhitespace);
+    return newEl;
+  }
+
   // Legt PaymentTerm am Ende der Abrechnung neu an, falls es fehlt (siehe
   // CONFIG.paymentTerm); existiert es bereits, werden nur Number/
   // CopyFromTable/Type sichergestellt, weitere Sub-Felder (z. B.
@@ -656,13 +692,8 @@
     var wasCreated = matches.length === 0;
 
     if (wasCreated) {
-      var qualifiedName = documentEl.prefix ? documentEl.prefix + ":" + cfg.elementName : cfg.elementName;
-      paymentTermEl = documentEl.ownerDocument.createElementNS(documentEl.namespaceURI, qualifiedName);
+      paymentTermEl = appendChildElement(documentEl, cfg.elementName);
       paymentTermEl.setAttribute("mode", "SAVE");
-      var indent = getChildIndent(documentEl);
-      var trailingWhitespace = documentEl.lastChild && documentEl.lastChild.nodeType === Node.TEXT_NODE ? documentEl.lastChild : null;
-      documentEl.insertBefore(documentEl.ownerDocument.createTextNode(indent), trailingWhitespace);
-      documentEl.insertBefore(paymentTermEl, trailingWhitespace);
     } else {
       paymentTermEl = matches[0];
     }
@@ -1009,6 +1040,193 @@
   }
 
   /* ======================================================================
+   * E-MAIL-ADRESSE AUS DEM MOCO-KUNDENEXPORT (für Mahnungen per E-Mail)
+   * ----------------------------------------------------------------------
+   * Der MOCO-XML-Export enthält keine E-Mail-Adressen. Sie stammen aus einem
+   * separat hochgeladenen MOCO-Kundenexport (.xlsx) und werden über die
+   * Kundennummer in Customer -> AddressData eingetragen (siehe
+   * CONFIG.customerEmail). Ein Kunde ohne E-Mail im Kundenexport ist KEIN
+   * Fehler - er wird nur in der Ergebnisübersicht aufgelistet.
+   * ====================================================================== */
+  // Rückgabe: "added"/"corrected"/"kept" (siehe ensureField) oder
+  // "notFound", falls der Kundenexport für diese Kundennummer keine
+  // E-Mail-Adresse enthält (ein bereits vorhandenes Feld bleibt dann stehen).
+  function transformCustomerEmail(customerEl, emailsByCustomerNumber) {
+    var cfg = CONFIG.customerEmail;
+    var customerNumber = getDirectChildTextByLocalName(customerEl, "CustomerNumber");
+    if (customerNumber == null || !Object.prototype.hasOwnProperty.call(emailsByCustomerNumber, customerNumber)) {
+      return "notFound";
+    }
+    assertNoDuplicateOrThrow(customerEl, cfg.parentLocalName);
+    var parentMatches = getDirectChildrenByLocalName(customerEl, cfg.parentLocalName);
+    if (parentMatches.length === 0) {
+      throw new Error("Das Element '" + cfg.parentLocalName + "' fehlt - die E-Mail-Adresse kann nicht eingetragen werden.");
+    }
+    var addressEl = parentMatches[0];
+    assertNoDuplicateOrThrow(addressEl, cfg.localName);
+    var email = emailsByCustomerNumber[customerNumber];
+    if (getDirectChildrenByLocalName(addressEl, cfg.localName).length > 0) {
+      return ensureField(addressEl, { localName: cfg.localName, value: email });
+    }
+    appendChildElement(addressEl, cfg.localName).textContent = email;
+    return "added";
+  }
+
+  // Minimaler ZIP-Reader als Gegenstück zum ZIP-Writer (buildZip) weiter
+  // unten - liest nur das zentrale Verzeichnis und liefert pro Dateiname
+  // { method, data } mit den (ggf. noch komprimierten) Rohdaten.
+  function listZipEntries(bytes) {
+    var dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    // End-of-Central-Directory-Record von hinten suchen (nach ihm kann nur
+    // noch ein Archiv-Kommentar von max. 64 KB folgen).
+    var eocd = -1;
+    for (var i = bytes.length - 22; i >= Math.max(0, bytes.length - 22 - 0xFFFF); i--) {
+      if (dv.getUint32(i, true) === 0x06054b50) { eocd = i; break; }
+    }
+    if (eocd < 0) {
+      throw new Error("Die Datei ist keine gültige .xlsx-Datei (ZIP-Struktur nicht erkannt).");
+    }
+    var entryCount = dv.getUint16(eocd + 10, true);
+    var pos = dv.getUint32(eocd + 16, true);
+    var decoder = new TextDecoder("utf-8");
+    var entries = {};
+    for (var n = 0; n < entryCount; n++) {
+      if (dv.getUint32(pos, true) !== 0x02014b50) {
+        throw new Error("Die Datei ist keine gültige .xlsx-Datei (beschädigtes ZIP-Verzeichnis).");
+      }
+      var method = dv.getUint16(pos + 10, true);
+      var compressedSize = dv.getUint32(pos + 20, true);
+      var nameLength = dv.getUint16(pos + 28, true);
+      var extraLength = dv.getUint16(pos + 30, true);
+      var commentLength = dv.getUint16(pos + 32, true);
+      var localOffset = dv.getUint32(pos + 42, true);
+      var name = decoder.decode(bytes.subarray(pos + 46, pos + 46 + nameLength));
+      // Die Daten beginnen erst nach dem lokalen Header, dessen Extra-Feld
+      // vom zentralen Verzeichnis abweichen kann - daher dort nachlesen.
+      var dataStart = localOffset + 30 + dv.getUint16(localOffset + 26, true) + dv.getUint16(localOffset + 28, true);
+      entries[name] = { method: method, data: bytes.subarray(dataStart, dataStart + compressedSize) };
+      pos += 46 + nameLength + extraLength + commentLength;
+    }
+    return entries;
+  }
+
+  // Entpackt einen ZIP-Eintrag als UTF-8-Text. Methode 8 ("deflate", so
+  // speichern Excel/MOCO) über die im Browser eingebaute DecompressionStream-
+  // API - daher asynchron, aber weiterhin ohne externe Bibliothek.
+  function readZipEntryText(entry) {
+    if (entry.method === 0) {
+      return Promise.resolve(new TextDecoder("utf-8").decode(entry.data));
+    }
+    if (entry.method === 8) {
+      if (typeof DecompressionStream === "undefined") {
+        return Promise.reject(new Error("Dieser Browser kann komprimierte .xlsx-Dateien nicht entpacken - bitte einen aktuellen Browser verwenden."));
+      }
+      var stream = new Blob([entry.data]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+      return new Response(stream).text();
+    }
+    return Promise.reject(new Error("Nicht unterstützte ZIP-Komprimierungsmethode " + entry.method + "."));
+  }
+
+  // Liefert { sheetXml, sharedStringsXml } des ersten Tabellenblatts. Der
+  // MOCO-Kundenexport besteht immer aus genau einem Blatt (sheet1.xml).
+  function readXlsxFirstSheet(arrayBuffer) {
+    return Promise.resolve().then(function () {
+      var entries = listZipEntries(new Uint8Array(arrayBuffer));
+      var sheetEntry = entries["xl/worksheets/sheet1.xml"];
+      if (!sheetEntry) {
+        throw new Error("Die .xlsx-Datei enthält kein Tabellenblatt (xl/worksheets/sheet1.xml fehlt).");
+      }
+      var sharedStringsEntry = entries["xl/sharedStrings.xml"];
+      return Promise.all([
+        readZipEntryText(sheetEntry),
+        sharedStringsEntry ? readZipEntryText(sharedStringsEntry) : null
+      ]);
+    }).then(function (texts) {
+      return { sheetXml: texts[0], sharedStringsXml: texts[1] };
+    });
+  }
+
+  function getDescendantTextsByLocalName(el, localName) {
+    return Array.prototype.map.call(el.getElementsByTagNameNS("*", localName), function (t) {
+      return t.textContent || "";
+    }).join("");
+  }
+
+  // Wandelt ein Tabellenblatt in Zeilen aus Spaltenbuchstabe -> Text um
+  // (Umkehrung von buildSheetXml). Gemeinsam genutzte Texte ("s"), Inline-
+  // Texte ("inlineStr") und Zahlen/Formelergebnisse werden einheitlich als
+  // getrimmter Text geliefert.
+  function parseSheetRows(sheetXml, sharedStringsXml) {
+    var sharedStrings = [];
+    if (sharedStringsXml) {
+      var sharedDoc = parseXmlOrThrow(sharedStringsXml);
+      Array.prototype.forEach.call(sharedDoc.getElementsByTagNameNS("*", "si"), function (si) {
+        sharedStrings.push(getDescendantTextsByLocalName(si, "t"));
+      });
+    }
+    var sheetDoc = parseXmlOrThrow(sheetXml);
+    return Array.prototype.map.call(sheetDoc.getElementsByTagNameNS("*", "row"), function (rowEl) {
+      var row = {};
+      getDirectChildrenByLocalName(rowEl, "c").forEach(function (cellEl) {
+        var column = (cellEl.getAttribute("r") || "").replace(/\d+$/, "");
+        var type = cellEl.getAttribute("t");
+        var value;
+        if (type === "inlineStr") {
+          value = getDescendantTextsByLocalName(cellEl, "t");
+        } else {
+          value = getDirectChildTextByLocalName(cellEl, "v");
+          if (type === "s" && value != null) value = sharedStrings[Number(value)];
+        }
+        row[column] = value == null ? "" : String(value).trim();
+      });
+      return row;
+    });
+  }
+
+  // Baut aus den Zeilen des MOCO-Kundenexports die Zuordnung Kundennummer ->
+  // E-Mail. Die Spalten werden über ihre Überschrift in der ersten Zeile
+  // gefunden (siehe CONFIG.customerEmail), nicht über eine feste Position.
+  // Ungültige Adressen und Kundennummern mit widersprüchlichen Adressen
+  // werden nicht übernommen, sondern als ignoredEntries zurückgemeldet.
+  function buildCustomerEmailLookup(rows) {
+    var cfg = CONFIG.customerEmail;
+    var header = rows[0] || {};
+    var numberColumn = null;
+    var emailColumn = null;
+    Object.keys(header).forEach(function (column) {
+      if (header[column] === cfg.exportNumberColumn) numberColumn = column;
+      if (header[column] === cfg.exportEmailColumn) emailColumn = column;
+    });
+    if (!numberColumn || !emailColumn) {
+      throw new Error(
+        "Die Spalte '" + (numberColumn ? cfg.exportEmailColumn : cfg.exportNumberColumn) +
+        "' wurde in der ersten Zeile nicht gefunden - handelt es sich um einen MOCO-Kundenexport?"
+      );
+    }
+
+    var emailsByCustomerNumber = {};
+    var conflictingNumbers = {};
+    var ignoredEntries = [];
+    rows.slice(1).forEach(function (row) {
+      var customerNumber = row[numberColumn];
+      var email = row[emailColumn];
+      if (!customerNumber || !email) return;
+      if (!/^[^\s@,;]+@[^\s@,;]+\.[^\s@,;]+$/.test(email)) {
+        ignoredEntries.push({ label: "Kunde Nr. " + customerNumber, message: "ungültige E-Mail-Adresse '" + email + "'" });
+        return;
+      }
+      var existing = emailsByCustomerNumber[customerNumber];
+      if (existing != null && existing !== email) conflictingNumbers[customerNumber] = true;
+      emailsByCustomerNumber[customerNumber] = email;
+    });
+    Object.keys(conflictingNumbers).forEach(function (customerNumber) {
+      delete emailsByCustomerNumber[customerNumber];
+      ignoredEntries.push({ label: "Kunde Nr. " + customerNumber, message: "mehrere unterschiedliche E-Mail-Adressen im Kundenexport" });
+    });
+    return { emailsByCustomerNumber: emailsByCustomerNumber, ignoredEntries: ignoredEntries };
+  }
+
+  /* ======================================================================
    * ZUSATZDATEN FÜR DIE ABRECHNUNGSLISTE (Kunden-Stammdaten, Dossier/Datei-
    * Informationen)
    * ----------------------------------------------------------------------
@@ -1108,6 +1326,10 @@
       customerErrorCount: 0,
       customerErrors: [],
       intercompanyStats: { added: 0, kept: 0, corrected: 0, notMatched: 0 },
+      // false, wenn kein Kundenexport übergeben wurde (options.emailsByCustomerNumber).
+      customerEmailApplied: false,
+      customerEmailStats: { added: 0, kept: 0, corrected: 0, notFound: 0 },
+      customersWithoutEmail: [],
       serializedXml: null
     };
 
@@ -1189,13 +1411,24 @@
 
     // Intercompany-Nummer für interne (Konzern-)Kunden - unabhängig von
     // Abrechnungen/Dossier-Einträgen, ein Kunde ohne Namenstreffer ist kein Fehler.
+    // Im selben Durchlauf: E-Mail-Adresse aus dem Kundenexport, sofern einer
+    // geladen wurde (ein Kunde ohne E-Mail ist ebenfalls kein Fehler).
     var customerEntries = findCustomerEntries(root);
     result.customerCount = customerEntries.length;
+    result.customerEmailApplied = options.emailsByCustomerNumber != null;
     customerEntries.forEach(function (entry, index) {
       var label = getCustomerLabel(entry.customerEl, entry.transactionEl, index);
       try {
         var action = transformCustomerIntercompany(entry.customerEl);
         result.intercompanyStats[action]++;
+        if (result.customerEmailApplied) {
+          var emailAction = transformCustomerEmail(entry.customerEl, options.emailsByCustomerNumber);
+          result.customerEmailStats[emailAction]++;
+          if (emailAction === "notFound") {
+            var name = getCustomerAddressName(entry.customerEl);
+            result.customersWithoutEmail.push(label + (name ? " (" + name + ")" : ""));
+          }
+        }
       } catch (err) {
         result.customerErrors.push({ label: label, message: err.message });
         result.customerErrorCount++;
@@ -1288,6 +1521,8 @@
   var listBtn = document.getElementById("listBtn");
   var statusArea = document.getElementById("statusArea");
   var resultOverview = document.getElementById("resultOverview");
+  var customerExportInput = document.getElementById("customerExportInput");
+  var customerExportStatus = document.getElementById("customerExportStatus");
 
   // Vorbelegung mit dem letzten Tag des Vormonats (übliches Fibu-Datum für
   // im Vormonat erbrachte Leistungen) - im Formular jederzeit änderbar.
@@ -1349,6 +1584,52 @@
       precheckFile();
     };
     reader.readAsText(file, "UTF-8");
+  }
+
+  function showCustomerExportStatus(message, isError) {
+    customerExportStatus.textContent = message;
+    customerExportStatus.className = "filename" + (isError ? " error" : "");
+  }
+
+  // Der Kundenexport bleibt auch beim Wechsel der XML-Datei geladen. Ändert
+  // er sich nach einer Verarbeitung, ist das bisherige Ergebnis veraltet und
+  // muss neu erzeugt werden.
+  function handleCustomerExportFile(file) {
+    state.emailsByCustomerNumber = null;
+    if (state.serializedXml) {
+      state.serializedXml = null;
+      state.invoiceRows = [];
+      downloadBtn.disabled = true;
+      listBtn.disabled = true;
+      resultOverview.hidden = true;
+      showStatus("Kundenexport geändert - bitte erneut \"XML anreichern\" ausführen.", "info");
+    }
+    if (!file) {
+      showCustomerExportStatus("", false);
+      return;
+    }
+    if (!/\.xlsx$/i.test(file.name)) {
+      showCustomerExportStatus("Der Kundenexport muss eine .xlsx-Datei sein.", true);
+      return;
+    }
+    showCustomerExportStatus("Kundenexport wird gelesen…", false);
+    file.arrayBuffer()
+      .then(readXlsxFirstSheet)
+      .then(function (sheet) {
+        var lookup = buildCustomerEmailLookup(parseSheetRows(sheet.sheetXml, sheet.sharedStringsXml));
+        state.emailsByCustomerNumber = lookup.emailsByCustomerNumber;
+        var message = file.name + ": " + Object.keys(lookup.emailsByCustomerNumber).length +
+          " Kunde(n) mit E-Mail-Adresse geladen.";
+        if (lookup.ignoredEntries.length > 0) {
+          message += " Nicht übernommen: " + lookup.ignoredEntries.map(function (e) {
+            return e.label + " (" + e.message + ")";
+          }).join("; ");
+        }
+        showCustomerExportStatus(message, false);
+      })
+      .catch(function (err) {
+        showCustomerExportStatus("Der Kundenexport konnte nicht gelesen werden: " + err.message, true);
+      });
   }
 
   // Leichte Vorprüfung direkt nach dem Laden: Struktur erkennen, aber noch
@@ -1479,6 +1760,25 @@
     html += "<li>Korrigiert (abweichender Wert): " + result.intercompanyStats.corrected + "</li>";
     html += "<li>Kein interner Kunde (Name nicht in der Liste): " + result.intercompanyStats.notMatched + "</li>";
     html += "</ul>";
+
+    html += "<h3>E-Mail-Adresse für Mahnungsversand ('" + CONFIG.customerEmail.localName + "')</h3>";
+    if (!result.customerEmailApplied) {
+      html += "<p>Kein MOCO-Kundenexport geladen - E-Mail-Adressen wurden nicht ergänzt.</p>";
+    } else {
+      html += "<ul>";
+      html += "<li>Neu ergänzt: " + result.customerEmailStats.added + "</li>";
+      html += "<li>Bereits korrekt vorhanden: " + result.customerEmailStats.kept + "</li>";
+      html += "<li>Korrigiert (abweichender Wert): " + result.customerEmailStats.corrected + "</li>";
+      html += "<li>Keine E-Mail-Adresse im Kundenexport: " + result.customerEmailStats.notFound + "</li>";
+      html += "</ul>";
+      if (result.customersWithoutEmail.length > 0) {
+        html += "<p>Ohne E-Mail-Adresse (Mahnung per E-Mail nicht möglich):</p><ul>";
+        result.customersWithoutEmail.forEach(function (label) {
+          html += "<li>" + escapeHtml(label) + "</li>";
+        });
+        html += "</ul>";
+      }
+    }
 
     if (result.customerErrorCount > 0) {
       html += "<div class=\"warning-banner\">⚠ Achtung: " + result.customerErrorCount + " von " + result.customerCount +
@@ -1781,6 +2081,9 @@
   fileInput.addEventListener("change", function () {
     handleFile(fileInput.files && fileInput.files[0]);
   });
+  customerExportInput.addEventListener("change", function () {
+    handleCustomerExportFile(customerExportInput.files && customerExportInput.files[0]);
+  });
 
   ["dragenter", "dragover"].forEach(function (evt) {
     dropzone.addEventListener(evt, function (e) {
@@ -1811,7 +2114,10 @@
     // Kurzes Timeout, damit die Statusmeldung sichtbar wird, bevor die
     // (synchrone) Verarbeitung startet.
     setTimeout(function () {
-      var result = processXmlString(state.xmlText, { generalLedgerDate: generalLedgerDateInput.value });
+      var result = processXmlString(state.xmlText, {
+        generalLedgerDate: generalLedgerDateInput.value,
+        emailsByCustomerNumber: state.emailsByCustomerNumber
+      });
       renderResult(result);
     }, 0);
   });
@@ -2215,6 +2521,7 @@
     var customerNumber = opts.customerNumber || "2200000";
     var name = opts.name != null ? opts.name : "Testkunde AG";
     var intercompanyXml = opts.intercompanyXml || "";
+    var addressExtraXml = opts.addressExtraXml || "";
     return (
       "<" + p + "Transaction id=\"" + txId + "\">" +
       "<" + p + "Customer mode=\"SAVE\">" +
@@ -2226,6 +2533,7 @@
       "<" + p + "AddressNumber>" + customerNumber + "</" + p + "AddressNumber>" +
       "<" + p + "Name>" + name + "</" + p + "Name>" +
       "<" + p + "Country>CH</" + p + "Country>" +
+      addressExtraXml +
       "</" + p + "AddressData>" +
       "</" + p + "Customer>" +
       "</" + p + "Transaction>"
@@ -2824,6 +3132,115 @@
     ], [TEST_GENERAL_LEDGER_DATE, TEST_GENERAL_LEDGER_DATE]);
   }
 
+  // --- E-Mail-Adresse aus dem MOCO-Kundenexport (CONFIG.customerEmail). ---
+
+  function test57(results) {
+    var belegeTask = makeBelegeTaskXml([makeDocumentXml({}, { number: "57001", customerNumber: "2200045" })]);
+    var kundenTx = makeCustomerTransactionXml({ customerNumber: "2200045", name: "Testkunde AG" });
+    var xml = wrapTasks([belegeTask, makeTaskXml("Kunden", [kundenTx])]);
+    var r = processXmlString(xml, {
+      generalLedgerDate: TEST_GENERAL_LEDGER_DATE,
+      emailsByCustomerNumber: { "2200045": "rechnung@kunde.example" }
+    });
+    check(results, "Test 57: E-Mail neu ergänzt (added=1)", r.customerEmailStats.added, 1);
+    check(results, "Test 57: kein Kundenfehler", r.customerErrorCount, 0);
+    var doc = new DOMParser().parseFromString(r.serializedXml, "application/xml");
+    var addressEl = doc.getElementsByTagName("AddressData")[0];
+    check(results, "Test 57: Email-Wert aus dem Kundenexport", getDirectChildTextByLocalName(addressEl, "Email"), "rechnung@kunde.example");
+    check(results, "Test 57: Email ist letztes Element in AddressData", addressEl.lastElementChild.localName, "Email");
+    check(results, "Test 57: Email-Spalte in der Abrechnungsliste",
+      r.invoiceResults[0].fields["Customer.AddressData.Email"], "rechnung@kunde.example");
+  }
+
+  function test58(results) {
+    var belegeTask = makeBelegeTaskXml([makeDocumentXml({}, { number: "58001" })]);
+    var kundenTxs = [
+      makeCustomerTransactionXml({ txId: "1", customerNumber: "2200045", addressExtraXml: "<Email>alt@kunde.example</Email>" }),
+      makeCustomerTransactionXml({ txId: "2", customerNumber: "2200039", addressExtraXml: "<Email>finanzen@intern.example</Email>" })
+    ];
+    var xml = wrapTasks([belegeTask, makeTaskXml("Kunden", kundenTxs)]);
+    var r = processXmlString(xml, {
+      generalLedgerDate: TEST_GENERAL_LEDGER_DATE,
+      emailsByCustomerNumber: { "2200045": "rechnung@kunde.example", "2200039": "finanzen@intern.example" }
+    });
+    check(results, "Test 58: abweichende E-Mail korrigiert, übereinstimmende behalten (corrected/kept)",
+      [r.customerEmailStats.corrected, r.customerEmailStats.kept, r.customerEmailStats.added], [1, 1, 0]);
+    var doc = new DOMParser().parseFromString(r.serializedXml, "application/xml");
+    var addressEls = doc.getElementsByTagName("AddressData");
+    check(results, "Test 58: korrigierter Wert, kein zweites Email-Feld", [
+      getDirectChildTextByLocalName(addressEls[0], "Email"),
+      getDirectChildrenByLocalName(addressEls[0], "Email").length
+    ], ["rechnung@kunde.example", 1]);
+  }
+
+  function test59(results) {
+    var belegeTask = makeBelegeTaskXml([makeDocumentXml({}, { number: "59001" })]);
+    var kundenTx = makeCustomerTransactionXml({ customerNumber: "2200061", name: "SVGW" });
+    var xml = wrapTasks([belegeTask, makeTaskXml("Kunden", [kundenTx])]);
+    var r = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE, emailsByCustomerNumber: {} });
+    check(results, "Test 59: Kunde ohne E-Mail im Kundenexport - notFound=1, kein Fehler",
+      [r.customerEmailStats.notFound, r.customerErrorCount], [1, 0]);
+    check(results, "Test 59: Kunde wird in der Übersicht aufgelistet", r.customersWithoutEmail, ["Kunde Nr. 2200061 (SVGW)"]);
+    check(results, "Test 59: kein Email-Feld angelegt", /<Email>/.test(r.serializedXml), false);
+
+    var rWithoutExport = processXmlString(xml, { generalLedgerDate: TEST_GENERAL_LEDGER_DATE });
+    check(results, "Test 59: ohne Kundenexport wird der Schritt übersprungen",
+      [rWithoutExport.customerEmailApplied, rWithoutExport.customerEmailStats.notFound], [false, 0]);
+  }
+
+  function test60(results) {
+    var sharedStringsXml =
+      "<sst xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">" +
+      "<si><t>Firma</t></si><si><t>Kundennummer</t></si><si><t>E-Mail</t></si><si><t>E-Mail (CC)</t></si>" +
+      "<si><r><t>Testkunde </t></r><r><t>AG</t></r></si><si><t>2200045</t></si><si><t> rechnung@kunde.example </t></si>" +
+      "</sst>";
+    var sheetXml =
+      "<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><sheetData>" +
+      "<row r=\"1\"><c r=\"A1\" t=\"s\"><v>0</v></c><c r=\"B1\" t=\"s\"><v>1</v></c><c r=\"C1\" t=\"s\"><v>3</v></c><c r=\"D1\" t=\"s\"><v>2</v></c></row>" +
+      "<row r=\"2\"><c r=\"A2\" t=\"s\"><v>4</v></c><c r=\"B2\" t=\"s\"><v>5</v></c><c r=\"D2\" t=\"s\"><v>6</v></c></row>" +
+      "<row r=\"3\"><c r=\"B3\"><v>2200061</v></c></row>" +
+      "<row r=\"4\"><c r=\"B4\"><v>2200070</v></c><c r=\"D4\" t=\"inlineStr\"><is><t>keine-adresse</t></is></c></row>" +
+      "<row r=\"5\"><c r=\"B5\"><v>2200080</v></c><c r=\"D5\" t=\"inlineStr\"><is><t>a@x.ch</t></is></c></row>" +
+      "<row r=\"6\"><c r=\"B6\"><v>2200080</v></c><c r=\"D6\" t=\"inlineStr\"><is><t>b@x.ch</t></is></c></row>" +
+      "</sheetData></worksheet>";
+    var rows = parseSheetRows(sheetXml, sharedStringsXml);
+    check(results, "Test 60: Rich-Text-Zelle wird zusammengesetzt", rows[1].A, "Testkunde AG");
+    var lookup = buildCustomerEmailLookup(rows);
+    check(results, "Test 60: nur gültige, eindeutige Adressen übernommen (Spalte über Überschrift, nicht 'E-Mail (CC)')",
+      lookup.emailsByCustomerNumber, { "2200045": "rechnung@kunde.example" });
+    check(results, "Test 60: ungültige und widersprüchliche Einträge gemeldet",
+      lookup.ignoredEntries.map(function (e) { return e.label; }), ["Kunde Nr. 2200070", "Kunde Nr. 2200080"]);
+
+    var missingColumnError = null;
+    try {
+      buildCustomerEmailLookup(parseSheetRows(sheetXml.replace(/<v>1<\/v>/, "<v>0</v>"), sharedStringsXml));
+    } catch (err) {
+      missingColumnError = err.message;
+    }
+    check(results, "Test 60: fehlende Spalte 'Kundennummer' ist ein Fehler", /'Kundennummer'/.test(missingColumnError || ""), true);
+  }
+
+  function test61(results) {
+    var encoder = new TextEncoder();
+    var zipBytes = buildZip([
+      { name: "xl/worksheets/sheet1.xml", data: encoder.encode("<worksheet/>") },
+      { name: "xl/sharedStrings.xml", data: encoder.encode("<sst>Zürich</sst>") }
+    ]);
+    var entries = listZipEntries(zipBytes);
+    check(results, "Test 61: ZIP-Reader findet alle Einträge des ZIP-Writers", Object.keys(entries), ["xl/worksheets/sheet1.xml", "xl/sharedStrings.xml"]);
+    check(results, "Test 61: Rohdaten unverändert (stored, inkl. Umlaut)", [
+      entries["xl/sharedStrings.xml"].method,
+      new TextDecoder("utf-8").decode(entries["xl/sharedStrings.xml"].data)
+    ], [0, "<sst>Zürich</sst>"]);
+    var notZipError = null;
+    try {
+      listZipEntries(encoder.encode("kein ZIP"));
+    } catch (err) {
+      notZipError = err.message;
+    }
+    check(results, "Test 61: keine ZIP-Datei wird erkannt", /ZIP-Struktur/.test(notZipError || ""), true);
+  }
+
   function runMocoSelfTests() {
     var results = [];
     var tests = [
@@ -2832,7 +3249,7 @@
       test22, test23, test24, test25, test26, test27, test28, test29, test30, test31, test32,
       test33, test34, test35, test36, test37, test38, test39, test40, test41, test42, test43,
       test44, test45, test46, test47, test48, test49, test50, test51, test52,
-      test53, test54, test55, test56
+      test53, test54, test55, test56, test57, test58, test59, test60, test61
     ];
     tests.forEach(function (fn) {
       try {

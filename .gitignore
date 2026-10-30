@@ -1,0 +1,4 @@
+# Lokale Kundendaten (z.B. MOCO-Kundenexport), nie committen
+private/
+
+.DS_Store
